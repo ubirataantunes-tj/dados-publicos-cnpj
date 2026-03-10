@@ -35,33 +35,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def check_diff(url, file_name):
+async def check_diff(url, file_name, client):
     '''
     Verifica se o arquivo no servidor existe no disco e se ele tem o mesmo
-    tamanho no servidor.
+    tamanho no servidor. Versão async para não bloquear o event loop.
     '''
     if not os.path.isfile(file_name):
         return True # ainda nao foi baixado
 
-    import ssl
     try:
-        # Configurar SSL mais permissivo
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        with httpx.Client(
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
-            timeout=30.0,
-            verify=ssl_context,
-            follow_redirects=True
-        ) as client:
-            response = client.head(url)
-            new_size = int(response.headers.get('content-length', 0))
-            old_size = os.path.getsize(file_name)
-            if new_size != old_size:
-                os.remove(file_name)
-                return True # tamanho diferentes
+        response = await client.head(url)
+        new_size = int(response.headers.get('content-length', 0))
+        old_size = os.path.getsize(file_name)
+        if new_size != old_size:
+            os.remove(file_name)
+            return True # tamanho diferentes
     except Exception as e:
         logger.warning(f"Erro ao verificar arquivo {url}: {e}. Assumindo que precisa baixar.")
         return True
@@ -474,20 +462,32 @@ def classificar_arquivos_extraidos():
 
 
 async def download_file_with_resume(url, file_name, client):
-    """Faz download de um arquivo com retry e resume automático em caso de queda"""
+    """Faz download de um arquivo com retry, resume e detecção de stall.
+
+    - Detecta stall se nenhum dado chegar por STALL_TIMEOUT segundos
+    - Retoma de onde parou (HTTP Range)
+    - Reseta o contador de falhas consecutivas quando há progresso real,
+      garantindo que arquivos grandes sempre completem eventualmente
+    """
     import aiofiles
+
+    STALL_TIMEOUT = 30  # segundos sem receber dados = stall
+    MAX_CONSECUTIVE_FAILURES = 5  # falhas SEM progresso antes de desistir
 
     os.makedirs(output_files, exist_ok=True)
     local_file_path = os.path.join(output_files, file_name)
-    max_retries = 10
 
-    for attempt in range(max_retries):
+    consecutive_failures = 0  # só incrementa quando não houve progresso
+
+    while consecutive_failures < MAX_CONSECUTIVE_FAILURES:
+        bytes_at_start = 0
         downloaded_bytes = 0
         extra_headers = {}
         file_mode = 'wb'
 
         if os.path.exists(local_file_path):
             downloaded_bytes = os.path.getsize(local_file_path)
+            bytes_at_start = downloaded_bytes
             if downloaded_bytes > 0:
                 extra_headers['Range'] = f'bytes={downloaded_bytes}-'
                 file_mode = 'ab'
@@ -505,19 +505,35 @@ async def download_file_with_resume(url, file_name, client):
                 else:
                     file_mode = 'wb'
                     downloaded_bytes = 0
+                    bytes_at_start = 0
 
                 total_size = int(response.headers.get('content-length', 0)) + downloaded_bytes
                 last_printed_percent = -1
+                chunk_iter = response.aiter_bytes(chunk_size=2097152)
 
                 async with aiofiles.open(local_file_path, file_mode) as f:
-                    async for chunk in response.aiter_bytes(chunk_size=524288):
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                chunk_iter.__anext__(), timeout=STALL_TIMEOUT
+                            )
+                        except StopAsyncIteration:
+                            break  # download completo
+                        except asyncio.TimeoutError:
+                            raise httpx.ReadTimeout(
+                                f'Stall detectado: nenhum dado por {STALL_TIMEOUT}s'
+                            )
+
                         await f.write(chunk)
                         downloaded_bytes += len(chunk)
 
                         if total_size > 0:
                             percent = int((downloaded_bytes / total_size) * 100)
                             if percent > last_printed_percent:
-                                sys.stdout.write(f'\r{file_name}: {percent}% [{downloaded_bytes:,}/{total_size:,}] bytes')
+                                sys.stdout.write(
+                                    f'\r{file_name}: {percent}% '
+                                    f'[{downloaded_bytes:,}/{total_size:,}] bytes'
+                                )
                                 sys.stdout.flush()
                                 last_printed_percent = percent
 
@@ -527,14 +543,21 @@ async def download_file_with_resume(url, file_name, client):
         except (httpx.ConnectError, httpx.TimeoutException,
                 httpx.RemoteProtocolError, httpx.ReadError,
                 ConnectionResetError, OSError) as e:
-            wait_time = min(2 ** attempt, 60)
+
+            made_progress = downloaded_bytes > bytes_at_start
+            if made_progress:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+
+            wait_time = min(2 ** consecutive_failures * 5, 60)
             logger.warning(
                 f'{file_name}: conexão caiu em {downloaded_bytes:,} bytes '
-                f'(tentativa {attempt + 1}/{max_retries}). '
+                f'(falhas sem progresso: {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}). '
                 f'Retomando em {wait_time}s... Erro: {type(e).__name__}'
             )
-            if attempt == max_retries - 1:
-                logger.error(f'{file_name}: todas as {max_retries} tentativas falharam.')
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.error(f'{file_name}: {MAX_CONSECUTIVE_FAILURES} falhas consecutivas sem progresso. Desistindo.')
                 return False
             await asyncio.sleep(wait_time)
 
@@ -546,7 +569,11 @@ async def download_file_with_resume(url, file_name, client):
 
 
 async def download_all_files():
-    """Download sequencial dos arquivos - um por vez para evitar travamentos do servidor"""
+    """Download sequencial dos arquivos com detecção de stall e resume.
+
+    Sequencial porque o servidor da Receita Federal não suporta múltiplos
+    downloads simultâneos de forma confiável.
+    """
     import ssl
 
     print(f'Iniciando download de {len(Files)} arquivos (sequencial com resume)...')
@@ -554,7 +581,7 @@ async def download_all_files():
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    timeout = httpx.Timeout(120.0, read=300.0, connect=60.0)
+    timeout = httpx.Timeout(120.0, read=60.0, connect=60.0)
 
     successful = 0
     failed = []
@@ -567,16 +594,17 @@ async def download_all_files():
         timeout=timeout,
         verify=ssl_context,
         follow_redirects=True,
-        limits=httpx.Limits(max_keepalive_connections=1, max_connections=1)
+        limits=httpx.Limits(max_keepalive_connections=1, max_connections=2)
     ) as client:
         for i, file_entry in enumerate(Files):
             basename = os.path.basename(file_entry)
             url = base_url + file_entry
-            file_path = os.path.join(output_files, basename)
+            file_path_local = os.path.join(output_files, basename)
 
             print(f'\n[{i+1}/{len(Files)}] {basename}')
 
-            if not check_diff(url, file_path):
+            needs_download = await check_diff(url, file_path_local, client)
+            if not needs_download:
                 print(f'{basename} já existe e está atualizado.')
                 successful += 1
                 continue
