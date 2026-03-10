@@ -309,11 +309,20 @@ if not output_files or not extracted_files:
 makedirs(output_files)
 makedirs(extracted_files)
 
-# Limpa arquivos da execução anterior para evitar conflitos entre meses
-removed_downloads = clean_directory(output_files)
-removed_extracted = clean_directory(extracted_files)
-if removed_downloads or removed_extracted:
-    logger.info(f"Limpeza: {removed_downloads} downloads e {removed_extracted} extraídos removidos da execução anterior")
+# Verifica se existem arquivos de execuções anteriores
+existing_downloads = [f for f in os.listdir(output_files) if os.path.isfile(os.path.join(output_files, f))]
+existing_extracted = [f for f in os.listdir(extracted_files) if os.path.isfile(os.path.join(extracted_files, f))]
+
+if existing_downloads or existing_extracted:
+    console.print(f"\n[yellow]⚠ Encontrados {len(existing_downloads)} arquivo(s) em downloads e {len(existing_extracted)} em extraídos de execuções anteriores.[/yellow]")
+    resposta = input("Deseja limpar os diretórios antes de iniciar? (s/n): ").strip().lower()
+    if resposta == 's':
+        removed_downloads = clean_directory(output_files)
+        removed_extracted = clean_directory(extracted_files)
+        logger.info(f"Limpeza: {removed_downloads} downloads e {removed_extracted} extraídos removidos")
+        console.print("[green]✅ Diretórios limpos com sucesso.[/green]")
+    else:
+        console.print("[blue]ℹ Mantendo arquivos existentes.[/blue]")
 
 print('Diretórios definidos: \n' +
       'output_files: ' + str(output_files) + '\n' +
