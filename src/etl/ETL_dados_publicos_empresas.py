@@ -274,7 +274,10 @@ print(f"\n✅ Configurado para baixar dados de: {ano}-{mes_formatado}")
 print("="*50)
 
 # URL de referencia da receita para baixar os arquivos .zip  
-base_url = f"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/{ano}-{mes_formatado}/"
+base_url =  f"https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
+# read_url =      f"https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK?dir=/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
+read_url =      f"{base_url}/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
+token = 'e/0Mb4srWNkSZx1S7iZ+K4v9djgSMnAg+76dzrbIciM=:OZJIFd1GYbVjK28ljHIafL+HBBdaRElhl+jyucP7AWY='
 
 # Read details from ".env" file:
 output_files = None
@@ -304,16 +307,24 @@ def get_html_with_retry(url, max_retries=3):
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            
+
+            headers = {
+                'requesttoken': token,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
             with httpx.Client(
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+                headers=headers,
                 timeout=30.0,
                 verify=ssl_context,
                 follow_redirects=True
             ) as client:
-                response = client.get(url)
+                # Se for para listar os arquivos da pasta, use PROPFIND
+                # Se for para baixar um arquivo direto da URL, use GET
+                response = client.request("PROPFIND", url) 
                 response.raise_for_status()
                 return response.content
+            
                 
         except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
             logger.warning(f"Tentativa {attempt + 1}/{max_retries} falhou: {e}")
@@ -325,11 +336,11 @@ def get_html_with_retry(url, max_retries=3):
             raise
 
 try:
-    raw_html = get_html_with_retry(base_url)
+    raw_html = get_html_with_retry(read_url)
 except Exception as e:
-    logger.error(f"Erro fatal ao acessar a URL {base_url}: {e}")
+    logger.error(f"Erro fatal ao acessar a URL {read_url}: {e}")
     print(f"\n❌ Erro ao acessar a página da Receita Federal.")
-    print(f"URL tentada: {base_url}")
+    print(f"URL tentada: {read_url}")
     print(f"Erro: {e}")
     print("\n🔍 Verificações:")
     print("1. Confirme se o ano/mês estão corretos")
@@ -337,39 +348,21 @@ except Exception as e:
     print("3. Tente novamente em alguns minutos")
     sys.exit(1)
 
-# Formatar página e converter em string
-page_items = bs.BeautifulSoup(raw_html, 'lxml')
-html_str = str(page_items)
-
-# Obter arquivos
+page_items = bs.BeautifulSoup(raw_html, 'xml')
 Files = []
-text = '.zip'
-for m in re.finditer(text, html_str):
-    i_start = m.start()-40
-    i_end = m.end()
-    i_loc = html_str[i_start:i_end].find('href=')+6
-    Files.append(html_str[i_start+i_loc:i_end])
 
-# Correcao do nome dos arquivos devido a mudanca na estrutura do HTML da pagina - 31/07/22 - Aphonso Rafael
-Files_clean = []
-for i in range(len(Files)):
-    if not Files[i].find('.zip">') > -1:
-        Files_clean.append(Files[i])
-
-try:
-    del Files
-except:
-    pass
-
-Files = Files_clean
+for tag in page_items.find_all('d:href'):
+    url = tag.text
+    if url.endswith('.zip'):
+        idx = url.find('/Dados')
+        if idx != -1:
+            Files.append(url[idx:])
 
 print('Arquivos que serão baixados:')
 for l in Files:
     print(l)
 
-# Separar arquivos por tipo
-Items = [name for name in os.listdir(extracted_files) if name.endswith('')]
-
+# Listas de arquivos por tipo (populadas após extração)
 arquivos_empresa = []
 arquivos_estabelecimento = []
 arquivos_socios = []
@@ -381,106 +374,172 @@ arquivos_natju = []
 arquivos_pais = []
 arquivos_quals = []
 
-for i in range(0, len(Items)):
-    if Items[i].find('EMPRECSV') > -1:
-        arquivos_empresa.append(Items[i])
-    elif Items[i].find('ESTABELE') > -1:
-        arquivos_estabelecimento.append(Items[i])
-    elif Items[i].find('SOCIOCSV') > -1:
-        arquivos_socios.append(Items[i])
-    elif Items[i].find('SIMPLES.') > -1:
-        arquivos_simples.append(Items[i])
-    elif Items[i].find('CNAECSV') > -1:
-        arquivos_cnae.append(Items[i])
-    elif Items[i].find('MOTICSV') > -1:
-        arquivos_moti.append(Items[i])
-    elif Items[i].find('MUNICCSV') > -1:
-        arquivos_munic.append(Items[i])
-    elif Items[i].find('NATJUCSV') > -1:
-        arquivos_natju.append(Items[i])
-    elif Items[i].find('PAISCSV') > -1:
-        arquivos_pais.append(Items[i])
-    elif Items[i].find('QUALSCSV') > -1:
-        arquivos_quals.append(Items[i])
-    else:
-        pass
+def classificar_arquivos_extraidos():
+    """Classifica os arquivos extraídos por tipo. Deve ser chamada APÓS a extração."""
+    global arquivos_empresa, arquivos_estabelecimento, arquivos_socios, arquivos_simples
+    global arquivos_cnae, arquivos_moti, arquivos_munic, arquivos_natju, arquivos_pais, arquivos_quals
+
+    arquivos_empresa.clear()
+    arquivos_estabelecimento.clear()
+    arquivos_socios.clear()
+    arquivos_simples.clear()
+    arquivos_cnae.clear()
+    arquivos_moti.clear()
+    arquivos_munic.clear()
+    arquivos_natju.clear()
+    arquivos_pais.clear()
+    arquivos_quals.clear()
+
+    Items = os.listdir(extracted_files)
+
+    for item in Items:
+        if 'EMPRECSV' in item:
+            arquivos_empresa.append(item)
+        elif 'ESTABELE' in item:
+            arquivos_estabelecimento.append(item)
+        elif 'SOCIOCSV' in item:
+            arquivos_socios.append(item)
+        elif 'SIMPLES.' in item:
+            arquivos_simples.append(item)
+        elif 'CNAECSV' in item:
+            arquivos_cnae.append(item)
+        elif 'MOTICSV' in item:
+            arquivos_moti.append(item)
+        elif 'MUNICCSV' in item:
+            arquivos_munic.append(item)
+        elif 'NATJUCSV' in item:
+            arquivos_natju.append(item)
+        elif 'PAISCSV' in item:
+            arquivos_pais.append(item)
+        elif 'QUALSCSV' in item:
+            arquivos_quals.append(item)
+
+    total = (len(arquivos_empresa) + len(arquivos_estabelecimento) + len(arquivos_socios) +
+             len(arquivos_simples) + len(arquivos_cnae) + len(arquivos_moti) +
+             len(arquivos_munic) + len(arquivos_natju) + len(arquivos_pais) + len(arquivos_quals))
+    print(f'Arquivos classificados: {total} arquivos extraídos encontrados')
+    print(f'  Empresa: {len(arquivos_empresa)}, Estabelecimento: {len(arquivos_estabelecimento)}, '
+          f'Sócios: {len(arquivos_socios)}, Simples: {len(arquivos_simples)}, '
+          f'CNAE: {len(arquivos_cnae)}, Outros: {len(arquivos_moti) + len(arquivos_munic) + len(arquivos_natju) + len(arquivos_pais) + len(arquivos_quals)}')
 
 
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def download_file_async(url, file_path, semaphore):
-    """Download file asynchronously with retry logic using httpx"""
-    import ssl
-    
-    async with semaphore:  # Limita downloads simultâneos
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        # Configurar SSL mais permissivo para downloads
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
+async def download_file_with_resume(url, file_name, client):
+    """Faz download de um arquivo com retry e resume automático em caso de queda"""
+    import aiofiles
+
+    os.makedirs(output_files, exist_ok=True)
+    local_file_path = os.path.join(output_files, file_name)
+    max_retries = 10
+
+    for attempt in range(max_retries):
+        downloaded_bytes = 0
+        extra_headers = {}
+        file_mode = 'wb'
+
+        if os.path.exists(local_file_path):
+            downloaded_bytes = os.path.getsize(local_file_path)
+            if downloaded_bytes > 0:
+                extra_headers['Range'] = f'bytes={downloaded_bytes}-'
+                file_mode = 'ab'
+
         try:
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=120.0,  # Timeout maior para downloads grandes
-                verify=ssl_context,
-                follow_redirects=True,
-                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-            ) as client:
-                async with client.stream('GET', url) as response:
-                    response.raise_for_status()
-                    
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-                    
-                    with open(file_path, 'wb') as f:
-                        async for chunk in response.aiter_bytes(chunk_size=65536):  # Chunks maiores para melhor performance
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            if total_size > 0:
-                                percent = (downloaded / total_size) * 100
-                                file_name = os.path.basename(file_path)
-                                sys.stdout.write(f'\r{file_name}: {percent:.1f}% [{downloaded:,}/{total_size:,}] bytes')
+            async with client.stream('GET', url, headers=extra_headers) as response:
+                if response.status_code == 416:
+                    print(f'\n{file_name} já baixado integralmente.')
+                    return True
+
+                response.raise_for_status()
+
+                if response.status_code == 206:
+                    file_mode = 'ab'
+                else:
+                    file_mode = 'wb'
+                    downloaded_bytes = 0
+
+                total_size = int(response.headers.get('content-length', 0)) + downloaded_bytes
+                last_printed_percent = -1
+
+                async with aiofiles.open(local_file_path, file_mode) as f:
+                    async for chunk in response.aiter_bytes(chunk_size=524288):
+                        await f.write(chunk)
+                        downloaded_bytes += len(chunk)
+
+                        if total_size > 0:
+                            percent = int((downloaded_bytes / total_size) * 100)
+                            if percent > last_printed_percent:
+                                sys.stdout.write(f'\r{file_name}: {percent}% [{downloaded_bytes:,}/{total_size:,}] bytes')
                                 sys.stdout.flush()
-                    
-                    print(f'\n{os.path.basename(file_path)} baixado com sucesso!')
-        
-        except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
-            logger.error(f'Erro de conexão ao baixar {os.path.basename(file_path)}: {e}')
-            raise
+                                last_printed_percent = percent
+
+            print(f'\n{file_name} baixado com sucesso!')
+            return True
+
+        except (httpx.ConnectError, httpx.TimeoutException,
+                httpx.RemoteProtocolError, httpx.ReadError,
+                ConnectionResetError, OSError) as e:
+            wait_time = min(2 ** attempt, 60)
+            logger.warning(
+                f'{file_name}: conexão caiu em {downloaded_bytes:,} bytes '
+                f'(tentativa {attempt + 1}/{max_retries}). '
+                f'Retomando em {wait_time}s... Erro: {type(e).__name__}'
+            )
+            if attempt == max_retries - 1:
+                logger.error(f'{file_name}: todas as {max_retries} tentativas falharam.')
+                return False
+            await asyncio.sleep(wait_time)
+
         except Exception as e:
-            logger.error(f'Erro inesperado ao baixar {os.path.basename(file_path)}: {e}')
-            raise
+            logger.error(f'Erro inesperado ao baixar {file_name}: {e}')
+            return False
+
+    return False
 
 
 async def download_all_files():
-    """Download todos os arquivos em paralelo de forma assíncrona"""
-    print(f'Iniciando download de {len(Files)} arquivos em paralelo...')
-    
-    # Semáforo para limitar downloads simultâneos (evita sobrecarregar o servidor)
-    download_semaphore = asyncio.Semaphore(3)  # Máximo 3 downloads simultâneos
-    
-    async def download_single_file(file_name):
-        url = base_url + file_name
-        file_path = os.path.join(output_files, file_name)
-        
-        if check_diff(url, file_path):
-            try:
-                await download_file_async(url, file_path, download_semaphore)
-            except Exception as e:
-                logger.error(f'Erro ao baixar {file_name}: {e}')
-                return False
-        else:
-            print(f'{file_name} já existe e está atualizado.')
-        return True
-    
-    # Executar downloads em paralelo
-    tasks = [download_single_file(file_name) for file_name in Files]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    successful = sum(1 for r in results if r is True)
+    """Download sequencial dos arquivos - um por vez para evitar travamentos do servidor"""
+    import ssl
+
+    print(f'Iniciando download de {len(Files)} arquivos (sequencial com resume)...')
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    timeout = httpx.Timeout(120.0, read=300.0, connect=60.0)
+
+    successful = 0
+    failed = []
+
+    async with httpx.AsyncClient(
+        headers={
+            'requesttoken': token,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout=timeout,
+        verify=ssl_context,
+        follow_redirects=True,
+        limits=httpx.Limits(max_keepalive_connections=1, max_connections=1)
+    ) as client:
+        for i, file_entry in enumerate(Files):
+            basename = os.path.basename(file_entry)
+            url = base_url + file_entry
+            file_path = os.path.join(output_files, basename)
+
+            print(f'\n[{i+1}/{len(Files)}] {basename}')
+
+            if not check_diff(url, file_path):
+                print(f'{basename} já existe e está atualizado.')
+                successful += 1
+                continue
+
+            ok = await download_file_with_resume(url, basename, client)
+            if ok:
+                successful += 1
+            else:
+                failed.append(basename)
+
     print(f'\nDownloads concluídos: {successful}/{len(Files)} arquivos')
+    if failed:
+        print(f'Falhas: {", ".join(failed)}')
 
 
 async def extract_all_files():
@@ -489,25 +548,32 @@ async def extract_all_files():
     
     def extract_single_file(file_name):
         try:
-            full_path = os.path.join(output_files, file_name)
+            basename = os.path.basename(file_name)
+            full_path = os.path.join(output_files, basename)
             if not os.path.exists(full_path):
-                return f'Arquivo {file_name} não encontrado'
-            
-            # Verificar integridade do arquivo ZIP
+                return f'Arquivo {basename} não encontrado em {output_files}'
+
             try:
                 with zipfile.ZipFile(full_path, 'r') as zip_ref:
-                    # Testar integridade do arquivo
-                    bad_file = zip_ref.testzip()
-                    if bad_file:
-                        return f'✗ Arquivo corrompido {file_name}: {bad_file} inválido'
-                    
-                    # Extrair arquivos
-                    zip_ref.extractall(extracted_files)
-                return f'✓ {file_name} extraído'
+                    # Verificar quais arquivos já foram extraídos com tamanho correto
+                    to_extract = []
+                    for info in zip_ref.infolist():
+                        dest = os.path.join(extracted_files, info.filename)
+                        if os.path.exists(dest) and os.path.getsize(dest) == info.file_size:
+                            continue  # já extraído e tamanho bate
+                        to_extract.append(info)
+
+                    if not to_extract:
+                        return f'⏭ {basename} já extraído'
+
+                    for info in to_extract:
+                        zip_ref.extract(info, extracted_files)
+
+                return f'✓ {basename} extraído ({len(to_extract)} arquivo(s))'
             except zipfile.BadZipFile:
-                return f'✗ Arquivo corrompido {file_name}: não é um ZIP válido'
+                return f'✗ Arquivo corrompido {basename}: não é um ZIP válido'
         except Exception as e:
-            return f'✗ Erro ao extrair {file_name}: {e}'
+            return f'✗ Erro ao extrair {basename}: {e}'
     
     # Usar ThreadPoolExecutor para extração paralela (I/O bound)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -1269,7 +1335,10 @@ async def main():
         extract_time = time.time() - extract_start
         logger.info(f"Extração concluída em {extract_time:.1f}s")
         console.print(f"[green]✅ Extração concluída em {extract_time:.1f}s[/green]")
-        
+
+        # Classificar arquivos extraídos (DEVE ser após extração)
+        classificar_arquivos_extraidos()
+
         # Fase 3: Processamento de dados
         console.print("\n[bold yellow]🗄️  [FASE 3] Processamento e inserção no banco...[/bold yellow]")
         logger.info("Iniciando processamento e inserção no banco")
