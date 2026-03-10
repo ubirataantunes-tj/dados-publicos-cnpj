@@ -275,9 +275,51 @@ print("="*50)
 
 # URL de referencia da receita para baixar os arquivos .zip  
 base_url =  f"https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
-# read_url =      f"https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK?dir=/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
 read_url =      f"{base_url}/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
-token = 'e/0Mb4srWNkSZx1S7iZ+K4v9djgSMnAg+76dzrbIciM=:OZJIFd1GYbVjK28ljHIafL+HBBdaRElhl+jyucP7AWY='
+
+def fetch_request_token():
+    import ssl
+    share_url =      f"https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK"
+    
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    
+    with httpx.Client(
+        timeout=30.0,
+        verify=ssl_context,
+        follow_redirects=True,
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    ) as client:
+        try:
+            response = client.get(share_url)
+            response.raise_for_status()
+            html = response.text
+        except Exception as e:
+            logger.error(f"Erro ao acessar {share_url} para obter token: {e}")
+            return None
+    
+    match = re.search(r'data-requesttoken="([^"]+)"', html)
+    if match:
+        return match.group(1)
+    
+    match = re.search(r'"requesttoken"\s*:\s*"([^"]+)"', html)
+    if match:
+        return match.group(1)
+    
+    raise RuntimeError("Token de request não encontrado na página. Verifique se a estrutura da página mudou ou se o token está presente.")
+
+print("Obtendo token de request...")
+try:
+    token = fetch_request_token()
+    if token:
+        print("Token obtido com sucesso!")
+    else:
+        logger.error("Token não encontrado. Verifique a página de onde o token deveria ser extraído.")
+except Exception as e:
+    logger.error(f"Erro ao obter token de request: {e}")
+    print("❌ Erro ao obter token de request. Verifique os logs para mais detalhes.")
+    sys.exit(1)
 
 # Read details from ".env" file:
 output_files = None
