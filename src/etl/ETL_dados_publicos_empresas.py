@@ -65,6 +65,24 @@ def makedirs(path):
         os.makedirs(path)
 
 
+def clean_directory(path):
+    '''
+    Remove todos os arquivos de um diretório para evitar conflitos
+    entre execuções mensais. Não remove subdiretórios.
+    '''
+    if not os.path.exists(path):
+        return 0
+
+    removed = 0
+    for filename in os.listdir(path):
+        filepath = os.path.join(path, filename)
+        if os.path.isfile(filepath):
+            os.remove(filepath)
+            removed += 1
+
+    return removed
+
+
 CHECKPOINT_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'checkpoint.json')
 
 def save_checkpoint(stage, file_index=None, batch_index=None):
@@ -290,6 +308,13 @@ if not output_files or not extracted_files:
 
 makedirs(output_files)
 makedirs(extracted_files)
+
+# Limpa arquivos da execução anterior para evitar conflitos entre meses
+removed_downloads = clean_directory(output_files)
+removed_extracted = clean_directory(extracted_files)
+if removed_downloads or removed_extracted:
+    logger.info(f"Limpeza: {removed_downloads} downloads e {removed_extracted} extraídos removidos da execução anterior")
+
 print('Diretórios definidos: \n' +
       'output_files: ' + str(output_files) + '\n' +
       'extracted_files: ' + str(extracted_files))
