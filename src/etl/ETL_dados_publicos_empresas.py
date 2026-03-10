@@ -223,13 +223,28 @@ if not os.path.isfile(dotenv_path):
 print(f'Carregando configurações de: {dotenv_path}')
 load_dotenv(dotenv_path=dotenv_path)
 
-# Solicitar ano e mês do usuário
+# Solicitar ano e mês do usuário (suporta ETL_YEAR/ETL_MONTH para execução não-interativa/cron)
 def get_year_month():
-    """Solicita ano e mês do usuário para formar a URL dos dados"""
+    """Solicita ano e mês do usuário para formar a URL dos dados.
+    Se ETL_YEAR e ETL_MONTH estiverem definidos no ambiente, usa-os diretamente (modo cron)."""
     import datetime
     current_year = datetime.datetime.now().year
     current_month = datetime.datetime.now().month
-    
+
+    env_year = os.getenv('ETL_YEAR')
+    env_month = os.getenv('ETL_MONTH')
+
+    if env_year and env_month:
+        try:
+            year = int(env_year)
+            month = int(env_month)
+            if 2019 <= year <= current_year and 1 <= month <= 12:
+                print(f"\n[MODO AUTOMÁTICO] Usando ETL_YEAR={year}, ETL_MONTH={month}")
+                return year, month
+        except ValueError:
+            pass
+        logger.warning("ETL_YEAR/ETL_MONTH inválidos, caindo para modo interativo")
+
     print("\n" + "="*50)
     print("CONFIGURAÇÃO DE ANO E MÊS PARA DOWNLOAD DOS DADOS")
     print("="*50)
@@ -256,7 +271,7 @@ def get_year_month():
                 month = current_month
             else:
                 month = int(month)
-            
+
             if month < 1 or month > 12:
                 print("❌ Mês deve estar entre 1 e 12")
                 continue
@@ -266,143 +281,136 @@ def get_year_month():
     
     return year, month
 
-# Obter ano e mês do usuário
+# Obter ano e mês do usuário (uma única vez, antes do loop de retry)
 ano, mes = get_year_month()
-mes_formatado = f"{mes:02d}"  # Formatar mês com 2 dígitos
+mes_formatado = f"{mes:02d}"
 
 print(f"\n✅ Configurado para baixar dados de: {ano}-{mes_formatado}")
 print("="*50)
 
-# URL de referencia da receita para baixar os arquivos .zip  
-base_url =  f"https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
-read_url =      f"{base_url}/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
-
-def fetch_request_token():
-    import ssl
-    share_url =      f"https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK"
-    
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    
-    with httpx.Client(
-        timeout=30.0,
-        verify=ssl_context,
-        follow_redirects=True,
-        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    ) as client:
-        try:
-            response = client.get(share_url)
-            response.raise_for_status()
-            html = response.text
-        except Exception as e:
-            logger.error(f"Erro ao acessar {share_url} para obter token: {e}")
-            return None
-    
-    match = re.search(r'data-requesttoken="([^"]+)"', html)
-    if match:
-        return match.group(1)
-    
-    match = re.search(r'"requesttoken"\s*:\s*"([^"]+)"', html)
-    if match:
-        return match.group(1)
-    
-    raise RuntimeError("Token de request não encontrado na página. Verifique se a estrutura da página mudou ou se o token está presente.")
-
-print("Obtendo token de request...")
-try:
-    token = fetch_request_token()
-    if token:
-        print("Token obtido com sucesso!")
-    else:
-        logger.error("Token não encontrado. Verifique a página de onde o token deveria ser extraído.")
-except Exception as e:
-    logger.error(f"Erro ao obter token de request: {e}")
-    print("❌ Erro ao obter token de request. Verifique os logs para mais detalhes.")
-    sys.exit(1)
+# URL de referencia da receita para baixar os arquivos .zip
+base_url = "https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
+read_url = f"{base_url}/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
 
 # Read details from ".env" file:
-output_files = None
-extracted_files = None
-try:
-    output_files = getEnv('OUTPUT_FILES_PATH')
-    makedirs(output_files)
+output_files = getEnv('OUTPUT_FILES_PATH')
+extracted_files = getEnv('EXTRACTED_FILES_PATH')
 
-    extracted_files = getEnv('EXTRACTED_FILES_PATH')
-    makedirs(extracted_files)
+if not output_files or not extracted_files:
+    logger.error('OUTPUT_FILES_PATH e/ou EXTRACTED_FILES_PATH não definidos no .env')
+    sys.exit(1)
 
-    print('Diretórios definidos: \n' +
-          'output_files: ' + str(output_files)  + '\n' +
-          'extracted_files: ' + str(extracted_files))
-except:
-    pass
-    logger.error('Erro na definição dos diretórios, verifique o arquivo ".env" ou o local informado do seu arquivo de configuração.')
+makedirs(output_files)
+makedirs(extracted_files)
+print('Diretórios definidos: \n' +
+      'output_files: ' + str(output_files) + '\n' +
+      'extracted_files: ' + str(extracted_files))
 
-# Fazer request com httpx com tratamento de erros robusto
-def get_html_with_retry(url, max_retries=3):
-    """Faz request com retry e tratamento de erros SSL/TLS"""
+# Globais que serão populadas por initialize()
+token = None
+Files = []
+
+
+def fetch_request_token(max_retries=5):
+    """Obtém token de request com retry e backoff exponencial"""
     import ssl
-    
+    share_url = "https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK"
+
     for attempt in range(max_retries):
         try:
-            # Configurar cliente com timeout e configurações SSL mais flexíveis
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+            with httpx.Client(
+                timeout=httpx.Timeout(60.0, connect=30.0),
+                verify=ssl_context,
+                follow_redirects=True,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            ) as client:
+                response = client.get(share_url)
+                response.raise_for_status()
+                html = response.text
+
+            match = re.search(r'data-requesttoken="([^"]+)"', html)
+            if match:
+                return match.group(1)
+
+            match = re.search(r'"requesttoken"\s*:\s*"([^"]+)"', html)
+            if match:
+                return match.group(1)
+
+            raise RuntimeError("Token de request não encontrado na página")
+
+        except Exception as e:
+            wait_time = min(2 ** attempt * 10, 300)  # 10s, 20s, 40s, 80s, 160s
+            logger.warning(f"Token: tentativa {attempt + 1}/{max_retries} falhou: {e}. Aguardando {wait_time}s...")
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(wait_time)
+
+
+def get_html_with_retry(url, request_token, max_retries=5):
+    """Faz request PROPFIND com retry e tratamento de erros SSL/TLS"""
+    import ssl
+
+    for attempt in range(max_retries):
+        try:
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
 
             headers = {
-                'requesttoken': token,
+                'requesttoken': request_token,
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
 
             with httpx.Client(
                 headers=headers,
-                timeout=30.0,
+                timeout=httpx.Timeout(60.0, connect=30.0),
                 verify=ssl_context,
                 follow_redirects=True
             ) as client:
-                # Se for para listar os arquivos da pasta, use PROPFIND
-                # Se for para baixar um arquivo direto da URL, use GET
-                response = client.request("PROPFIND", url) 
+                response = client.request("PROPFIND", url)
                 response.raise_for_status()
                 return response.content
-            
-                
+
         except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
-            logger.warning(f"Tentativa {attempt + 1}/{max_retries} falhou: {e}")
+            wait_time = min(2 ** attempt * 10, 300)
+            logger.warning(f"PROPFIND: tentativa {attempt + 1}/{max_retries} falhou: {e}. Aguardando {wait_time}s...")
             if attempt == max_retries - 1:
                 raise
-            time.sleep(2 ** attempt)  # Backoff exponencial
+            time.sleep(wait_time)
         except Exception as e:
             logger.error(f"Erro inesperado ao acessar {url}: {e}")
             raise
 
-try:
-    raw_html = get_html_with_retry(read_url)
-except Exception as e:
-    logger.error(f"Erro fatal ao acessar a URL {read_url}: {e}")
-    print(f"\n❌ Erro ao acessar a página da Receita Federal.")
-    print(f"URL tentada: {read_url}")
-    print(f"Erro: {e}")
-    print("\n🔍 Verificações:")
-    print("1. Confirme se o ano/mês estão corretos")
-    print("2. Verifique sua conexão com a internet")
-    print("3. Tente novamente em alguns minutos")
-    sys.exit(1)
 
-page_items = bs.BeautifulSoup(raw_html, 'xml')
-Files = []
+def initialize():
+    """Obtém token e lista de arquivos do servidor. Popula as globais token e Files."""
+    global token, Files
 
-for tag in page_items.find_all('d:href'):
-    url = tag.text
-    if url.endswith('.zip'):
-        idx = url.find('/Dados')
-        if idx != -1:
-            Files.append(url[idx:])
+    print("Obtendo token de request...")
+    token = fetch_request_token()
+    print("Token obtido com sucesso!")
 
-print('Arquivos que serão baixados:')
-for l in Files:
-    print(l)
+    raw_html = get_html_with_retry(read_url, token)
+    page_items = bs.BeautifulSoup(raw_html, 'xml')
+    Files = []
+
+    for tag in page_items.find_all('d:href'):
+        url = tag.text
+        if url.endswith('.zip'):
+            idx = url.find('/Dados')
+            if idx != -1:
+                Files.append(url[idx:])
+
+    if not Files:
+        raise RuntimeError(f"Nenhum arquivo .zip encontrado na URL {read_url}")
+
+    print(f'Arquivos que serão baixados ({len(Files)}):')
+    for f in Files:
+        print(f'  {f}')
 
 # Listas de arquivos por tipo (populadas após extração)
 arquivos_empresa = []
@@ -1357,10 +1365,13 @@ async def main():
     console.print("\n[bold magenta]" + "="*50 + "[/bold magenta]")
     console.print("[bold magenta]    PROCESSO ETL ASSÍNCRONO INICIADO    [/bold magenta]")
     console.print("[bold magenta]" + "="*50 + "[/bold magenta]\n")
-    
+
     start_time = time.time()
     logger.info("Processo ETL iniciado")
-    
+
+    # Fase 0: Inicialização (token + listagem de arquivos)
+    initialize()
+
     try:
         # Fase 1: Download paralelo
         console.print("\n[bold yellow]📥 [FASE 1] Download dos arquivos...[/bold yellow]")
@@ -1369,7 +1380,7 @@ async def main():
         download_time = time.time() - download_start
         logger.info(f"Download concluído em {download_time:.1f}s")
         console.print(f"[green]✅ Download concluído em {download_time:.1f}s[/green]")
-        
+
         # Fase 2: Extração paralela
         console.print("\n[bold yellow]📂 [FASE 2] Extração dos arquivos...[/bold yellow]")
         extract_start = time.time()
@@ -1384,76 +1395,104 @@ async def main():
         # Fase 3: Processamento de dados
         console.print("\n[bold yellow]🗄️  [FASE 3] Processamento e inserção no banco...[/bold yellow]")
         logger.info("Iniciando processamento e inserção no banco")
-        
+
         # Criar banco de dados se não existir
         await create_database_if_not_exists()
-        
+
         # Criar pool de conexões
         pool = await create_db_pool()
-        
+
         try:
             # Configurar tabelas
             await setup_tables(pool)
-            
+
             # Processar todos os tipos de arquivo
             checkpoint = load_checkpoint()
-            
+
             # Verificar qual etapa retomar
             if not checkpoint or checkpoint['stage'] == 'empresa':
                 await process_empresa_files(pool)
                 save_checkpoint('empresa_completed')
-            
+
             if not checkpoint or checkpoint['stage'] in ['empresa', 'empresa_completed', 'estabelecimento']:
                 await process_estabelecimento_files(pool)
                 save_checkpoint('estabelecimento_completed')
-            
+
             if not checkpoint or checkpoint['stage'] in ['empresa', 'empresa_completed', 'estabelecimento', 'estabelecimento_completed', 'socios']:
                 await process_socios_files(pool)
                 save_checkpoint('socios_completed')
-            
+
             if not checkpoint or checkpoint['stage'] in ['empresa', 'empresa_completed', 'estabelecimento', 'estabelecimento_completed', 'socios', 'socios_completed', 'simples']:
                 await process_simples_files(pool)
                 save_checkpoint('simples_completed')
-            
+
             await process_outros_arquivos(pool)
-            
+
             # Criar índices automaticamente
             save_checkpoint('creating_indexes')
             await create_indexes(pool)
-            
+
             # Limpar checkpoint após conclusão bem-sucedida
             clear_checkpoint()
-            
+
         finally:
             # Fechar pool de conexões
             await pool.close()
-        
+
         total_time = time.time() - start_time
         minutes = int(total_time // 60)
         seconds = int(total_time % 60)
-        
+
         console.print(f"\n[bold green]" + "="*60 + "[/bold green]")
         console.print(f"[bold green]    ✅ PROCESSO CONCLUÍDO EM {minutes}m {seconds}s ({total_time:.1f}s)    [/bold green]")
         console.print(f"[bold green]" + "="*60 + "[/bold green]")
-        
+
         # Resumo dos tempos
         table = Table(title="📊 Resumo de Performance")
         table.add_column("Fase", style="cyan")
         table.add_column("Tempo", style="magenta")
         table.add_row("Download", f"{download_time:.1f}s")
-        table.add_row("Extração", f"{extract_time:.1f}s") 
+        table.add_row("Extração", f"{extract_time:.1f}s")
         table.add_row("Processamento", f"{total_time - download_time - extract_time:.1f}s")
         table.add_row("Total", f"{total_time:.1f}s", style="bold")
         console.print(table)
-        
+
         logger.info(f"Processo ETL concluído em {total_time:.1f}s")
         console.print("\n[bold blue]🎉 Processo 100% finalizado! Você já pode usar seus dados no BD![/bold blue]")
-        
+
     except Exception as e:
         logger.error(f"Erro no processo ETL: {e}", exc_info=True)
         console.print(f"\n[bold red]✗ ERRO NO PROCESSO ETL: {e}[/bold red]")
         raise
 
 
+# Número máximo de tentativas do pipeline completo (configurável via ETL_MAX_RETRIES)
+MAX_PIPELINE_RETRIES = int(os.getenv('ETL_MAX_RETRIES', '10'))
+
+
+def run_with_retry():
+    """Executa o pipeline ETL completo com retry automático até sucesso."""
+    for attempt in range(MAX_PIPELINE_RETRIES):
+        try:
+            asyncio.run(main())
+            return  # Sucesso
+        except KeyboardInterrupt:
+            console.print("\n[bold red]Execução cancelada pelo usuário.[/bold red]")
+            sys.exit(130)
+        except SystemExit:
+            raise
+        except Exception as e:
+            wait_time = min(2 ** attempt * 30, 600)  # 30s, 60s, 120s, 240s, 480s, 600s...
+            console.print(
+                f"\n[bold red]Pipeline falhou (tentativa {attempt + 1}/{MAX_PIPELINE_RETRIES}): {e}[/bold red]"
+            )
+            if attempt == MAX_PIPELINE_RETRIES - 1:
+                console.print("[bold red]Todas as tentativas esgotadas. Abortando.[/bold red]")
+                sys.exit(1)
+            console.print(f"[yellow]Aguardando {wait_time}s antes de re-tentar...[/yellow]")
+            logger.info(f"Retry {attempt + 1}/{MAX_PIPELINE_RETRIES} em {wait_time}s")
+            time.sleep(wait_time)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_with_retry()
