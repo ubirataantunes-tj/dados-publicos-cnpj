@@ -22,17 +22,19 @@ load_dotenv()
 console = Console()
 
 # Configurações do banco
+cmd_timeout = int(os.getenv('DB_COMMAND_TIMEOUT', '3600'))
+cmd_timeout_ms = str(cmd_timeout * 1000)
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
-    'port': int(os.getenv('DB_PORT', 5432)),
+    'port': int(os.getenv('DB_PORT', '5432')),
     'database': os.getenv('DB_NAME', 'receita_cnpj'),
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', ''),
-    'command_timeout': 3600,  # 1 hora de timeout
+    'command_timeout': cmd_timeout,
     'server_settings': {
-        'statement_timeout': '3600000',  # 1 hora em ms
-        'lock_timeout': '3600000',
-        'idle_in_transaction_session_timeout': '3600000'
+        'statement_timeout': cmd_timeout_ms,
+        'lock_timeout': cmd_timeout_ms,
+        'idle_in_transaction_session_timeout': cmd_timeout_ms
     }
 }
 

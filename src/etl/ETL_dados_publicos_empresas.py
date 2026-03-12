@@ -210,7 +210,7 @@ mes_formatado = f"{mes:02d}"
 print(f"\nConfigurado para baixar dados de: {ano}-{mes_formatado}")
 print("="*50)
 
-base_url = "https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
+base_url = getEnv('RECEITA_FEDERAL_BASE_URL', 'https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK')
 read_url = f"{base_url}/Dados/Cadastros/CNPJ/{ano}-{mes_formatado}/"
 
 output_files = getEnv('OUTPUT_FILES_PATH')
@@ -254,7 +254,9 @@ Files = []
 def fetch_request_token(max_retries=5):
     """Obtem token de request com retry e backoff exponencial"""
     import ssl
-    share_url = "https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK"
+    share_url = getEnv('RECEITA_FEDERAL_SHARE_URL', 'https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK')
+    http_timeout_read = float(getEnv('HTTP_TIMEOUT_READ', '60.0'))
+    http_timeout_connect = float(getEnv('HTTP_TIMEOUT_CONNECT', '30.0'))
 
     for attempt in range(max_retries):
         try:
@@ -263,7 +265,7 @@ def fetch_request_token(max_retries=5):
             ssl_context.verify_mode = ssl.CERT_NONE
 
             with httpx.Client(
-                timeout=httpx.Timeout(60.0, connect=30.0),
+                timeout=httpx.Timeout(http_timeout_read, connect=http_timeout_connect),
                 verify=ssl_context,
                 follow_redirects=True,
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -293,6 +295,8 @@ def fetch_request_token(max_retries=5):
 def get_html_with_retry(url, request_token, max_retries=5):
     """Faz request PROPFIND com retry"""
     import ssl
+    http_timeout_read = float(getEnv('HTTP_TIMEOUT_READ', '60.0'))
+    http_timeout_connect = float(getEnv('HTTP_TIMEOUT_CONNECT', '30.0'))
 
     for attempt in range(max_retries):
         try:
@@ -307,7 +311,7 @@ def get_html_with_retry(url, request_token, max_retries=5):
 
             with httpx.Client(
                 headers=headers,
-                timeout=httpx.Timeout(60.0, connect=30.0),
+                timeout=httpx.Timeout(http_timeout_read, connect=http_timeout_connect),
                 verify=ssl_context,
                 follow_redirects=True
             ) as client:
@@ -411,8 +415,8 @@ async def download_file_with_resume(url, file_name, client):
     """Download com retry, resume e deteccao de stall."""
     import aiofiles
 
-    STALL_TIMEOUT = 30
-    MAX_CONSECUTIVE_FAILURES = 5
+    STALL_TIMEOUT = int(getEnv('DOWNLOAD_STALL_TIMEOUT', '30'))
+    MAX_CONSECUTIVE_FAILURES = int(getEnv('MAX_CONSECUTIVE_DOWNLOAD_FAILURES', '5'))
 
     os.makedirs(output_files, exist_ok=True)
     local_file_path = os.path.join(output_files, file_name)
@@ -449,7 +453,8 @@ async def download_file_with_resume(url, file_name, client):
 
                 total_size = int(response.headers.get('content-length', 0)) + downloaded_bytes
                 last_printed_percent = -1
-                chunk_iter = response.aiter_bytes(chunk_size=2097152)
+                download_chunk_size = int(getEnv('DOWNLOAD_CHUNK_SIZE', '2097152'))
+                chunk_iter = response.aiter_bytes(chunk_size=download_chunk_size)
 
                 async with aiofiles.open(local_file_path, file_mode) as f:
                     while True:
@@ -519,7 +524,11 @@ async def download_all_files():
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    timeout = httpx.Timeout(120.0, read=60.0, connect=60.0)
+    dl_timeout_read = float(getEnv('DOWNLOAD_TIMEOUT_READ', '120.0'))
+    dl_timeout_connect = float(getEnv('DOWNLOAD_TIMEOUT_CONNECT', '60.0'))
+    timeout = httpx.Timeout(dl_timeout_read, read=dl_timeout_read, connect=dl_timeout_connect)
+    max_keepalive = int(getEnv('HTTP_MAX_KEEPALIVE_CONNECTIONS', '1'))
+    max_conn = int(getEnv('HTTP_MAX_CONNECTIONS', '2'))
 
     downloaded = 0
     up_to_date = 0
@@ -533,7 +542,7 @@ async def download_all_files():
         timeout=timeout,
         verify=ssl_context,
         follow_redirects=True,
-        limits=httpx.Limits(max_keepalive_connections=1, max_connections=2)
+        limits=httpx.Limits(max_keepalive_connections=max_keepalive, max_connections=max_conn)
     ) as client:
         for i, file_entry in enumerate(Files):
             basename = os.path.basename(file_entry)
@@ -603,7 +612,8 @@ async def extract_all_files():
         except Exception as e:
             return f'Erro ao extrair {basename}: {e}'
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    extract_workers = int(getEnv('EXTRACT_MAX_WORKERS', '4'))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=extract_workers) as executor:
         future_to_file = {executor.submit(extract_single_file, f): f for f in Files}
         for future in concurrent.futures.as_completed(future_to_file):
             result = future.result()
@@ -868,9 +878,10 @@ async def create_database_if_not_exists():
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                db_connect_timeout = int(getEnv('DB_CONNECT_TIMEOUT', '30'))
                 conn = await asyncpg.connect(
                     user=user, password=passw, database='postgres',
-                    host=host, port=port, ssl=ssl_config, timeout=30
+                    host=host, port=port, ssl=ssl_config, timeout=db_connect_timeout
                 )
                 break
             except (ConnectionResetError, asyncpg.exceptions.ConnectionDoesNotExistError) as e:
@@ -918,25 +929,31 @@ async def create_db_pool():
     else:
         ssl_config = 'prefer'
 
+    keepalive_idle = int(getEnv('TCP_KEEPALIVE_IDLE', '30'))
+    keepalive_interval = int(getEnv('TCP_KEEPALIVE_INTERVAL', '10'))
+    keepalive_count = int(getEnv('TCP_KEEPALIVE_COUNT', '3'))
+
     async def pool_init(conn):
         """Configura TCP keepalive em cada conexao para detectar banco morto."""
-        # Envia keepalive a cada 30s; se 3 probes falharem, conexao morre em ~90s
         raw_socket = conn._transport.get_extra_info('socket')
         if raw_socket is not None:
             raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            # Linux-specific keepalive tuning
             if hasattr(socket, 'TCP_KEEPIDLE'):
-                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, keepalive_idle)
             if hasattr(socket, 'TCP_KEEPINTVL'):
-                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, keepalive_interval)
             if hasattr(socket, 'TCP_KEEPCNT'):
-                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, keepalive_count)
+
+    pool_min = int(getEnv('DB_POOL_MIN_SIZE', '2'))
+    pool_max = int(getEnv('DB_POOL_MAX_SIZE', '10'))
+    cmd_timeout = int(getEnv('DB_COMMAND_TIMEOUT', '3600'))
 
     return await asyncpg.create_pool(
         user=user, password=passw, database=database,
         host=host, port=port, ssl=ssl_config,
-        min_size=2, max_size=10,
-        command_timeout=3600,
+        min_size=pool_min, max_size=pool_max,
+        command_timeout=cmd_timeout,
         server_settings={
             'client_encoding': 'utf8',
             'timezone': 'UTC'
@@ -1012,7 +1029,8 @@ async def db_watchdog(pool, main_task, interval=60):
     while True:
         await asyncio.sleep(interval)
         try:
-            async with pool.acquire(timeout=10) as conn:
+            pool_acquire_timeout = int(getEnv('DB_POOL_ACQUIRE_TIMEOUT', '10'))
+            async with pool.acquire(timeout=pool_acquire_timeout) as conn:
                 await conn.fetchval('SELECT 1')
             consecutive_failures = 0
         except asyncio.CancelledError:
@@ -1116,7 +1134,7 @@ async def process_estabelecimento_files(pool):
                      'ddd_fax', 'fax', 'correio_eletronico', 'situacao_especial',
                      'data_situacao_especial']
 
-    CHUNK_SIZE = 500_000
+    CHUNK_SIZE = int(getEnv('DATA_CHUNK_SIZE', '500000'))
 
     for e in range(len(arquivos_estabelecimento)):
         logger.info(f'Estabelecimento [{e+1}/{len(arquivos_estabelecimento)}]: {arquivos_estabelecimento[e]}')

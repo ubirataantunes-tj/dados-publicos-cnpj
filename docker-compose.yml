@@ -5,19 +5,19 @@ services:
     image: bitnami/postgresql:17
     container_name: receita_postgres
     environment:
-      - POSTGRESQL_DATABASE=receita_cnpj
-      - POSTGRESQL_USERNAME=postgres
-      - POSTGRESQL_PASSWORD=Li9Q3sDeofmTdO0sOwinx68yA452aksh
-      - POSTGRESQL_ROOT_PASSWORD=Li9Q3sDeofmTdO0sOwinx68yA452aksh
+      - POSTGRESQL_DATABASE=${DB_NAME:-receita_cnpj}
+      - POSTGRESQL_USERNAME=${DB_USER:-postgres}
+      - POSTGRESQL_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD no .env}
+      - POSTGRESQL_ROOT_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD no .env}
       - POSTGRESQL_PORT_NUMBER=5432
     ports:
-      - "5436:5432"
+      - "${DB_PORT:-5436}:5432"
     volumes:
       - postgres_data:/bitnami/postgresql
       - ./code/banco_de_dados.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d receita_cnpj"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-receita_cnpj}"]
       interval: 30s
       timeout: 10s
       retries: 5

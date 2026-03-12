@@ -215,21 +215,28 @@ async def main():
         console.print(f"[cyan]📊 Amostra: {sample_file}[/cyan]")
         
         # Gerar script de instalação
+        db_host = os.getenv('DB_HOST', 'localhost')
+        db_port = os.getenv('DB_PORT', '5432')
+        db_user = os.getenv('DB_USER', 'postgres')
         install_script = f"""#!/bin/bash
 # Script de instalação do banco Receita Federal
 # Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
+DB_HOST="${{DB_HOST:-{db_host}}}"
+DB_PORT="${{DB_PORT:-{db_port}}}"
+DB_USER="${{DB_USER:-{db_user}}}"
+
 echo "Criando banco de dados..."
-createdb -h localhost -p 5432 -U postgres receita_cnpj_restored
+createdb -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" receita_cnpj_restored
 
 echo "Aplicando estrutura..."
-psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f {model_file}
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d receita_cnpj_restored -f {model_file}
 
 echo "Inserindo dados de amostra..."
-psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f {sample_file}
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d receita_cnpj_restored -f {sample_file}
 
 echo "Aplicando configurações..."
-psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f src/database_setup.sql
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d receita_cnpj_restored -f src/database_setup.sql
 
 echo "Banco instalado com sucesso!"
 """
