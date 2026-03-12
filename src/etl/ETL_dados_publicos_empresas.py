@@ -5,6 +5,7 @@ ETL para download e processamento dos dados publicos da Receita Federal - CNPJ
 Processamento com pandas no host + insercao via copy_records_to_table no staging.
 Estrategia de schema swap para manter dados sempre disponiveis.
 """
+import argparse
 import asyncio
 import datetime
 import gc
@@ -148,31 +149,29 @@ if not os.path.isfile(dotenv_path):
 print(f'Carregando configuracoes de: {dotenv_path}')
 load_dotenv(dotenv_path=dotenv_path)
 
-ETL_AUTO = os.getenv('ETL_AUTO', '').lower() == 'true'
+parser = argparse.ArgumentParser(description='ETL Dados Publicos CNPJ - Receita Federal')
+parser.add_argument('--debug', action='store_true', help='Modo interativo com inputs manuais')
+cli_args = parser.parse_args()
+
+DEBUG_MODE = cli_args.debug
+
+
+def get_previous_month():
+    """Retorna (ano, mes) do mes anterior ao atual."""
+    today = datetime.date.today()
+    first_of_month = today.replace(day=1)
+    last_month = first_of_month - datetime.timedelta(days=1)
+    return last_month.year, last_month.month
 
 
 def get_year_month():
-    """Solicita ano e mes. Em modo automatico, usa variaveis de ambiente ou mes atual."""
+    """Retorna ano e mes. Em modo debug, solicita input. Senao, usa mes anterior."""
     current_year = datetime.datetime.now().year
-    current_month = datetime.datetime.now().month
 
-    env_year = os.getenv('ETL_YEAR')
-    env_month = os.getenv('ETL_MONTH')
-
-    if env_year and env_month:
-        try:
-            year = int(env_year)
-            month = int(env_month)
-            if 2019 <= year <= current_year and 1 <= month <= 12:
-                print(f"\n[MODO AUTOMATICO] Usando ETL_YEAR={year}, ETL_MONTH={month}")
-                return year, month
-        except ValueError:
-            pass
-        logger.warning("ETL_YEAR/ETL_MONTH invalidos")
-
-    if ETL_AUTO:
-        print(f"\n[MODO AUTOMATICO] Usando ano={current_year}, mes={current_month}")
-        return current_year, current_month
+    if not DEBUG_MODE:
+        year, month = get_previous_month()
+        print(f"\n[MODO AUTOMATICO] Usando mes anterior: {year}-{month:02d}")
+        return year, month
 
     print("\n" + "="*50)
     print("CONFIGURACAO DE ANO E MES PARA DOWNLOAD DOS DADOS")
@@ -189,6 +188,7 @@ def get_year_month():
         except ValueError:
             print("Por favor, digite um ano valido")
 
+    current_month = datetime.datetime.now().month
     while True:
         try:
             month = input(f"Digite o mes (1-12, exemplo: {current_month}): ").strip()
@@ -226,7 +226,7 @@ existing_downloads = [f for f in os.listdir(output_files) if os.path.isfile(os.p
 existing_extracted = [f for f in os.listdir(extracted_files) if os.path.isfile(os.path.join(extracted_files, f))]
 
 if existing_downloads or existing_extracted:
-    if ETL_AUTO:
+    if not DEBUG_MODE:
         removed_downloads = clean_directory(output_files)
         removed_extracted = clean_directory(extracted_files)
         logger.info(f"Limpeza automatica: {removed_downloads} downloads e {removed_extracted} extraidos removidos")
@@ -1263,6 +1263,14 @@ async def main():
         console.print(table)
 
         console.print("\n[bold blue]Dados disponiveis no banco![/bold blue]")
+
+        # Limpeza final dos arquivos baixados e extraidos
+        if not DEBUG_MODE:
+            console.print("\n[bold yellow]Limpando arquivos temporarios...[/bold yellow]")
+            removed_dl = clean_directory(output_files)
+            removed_ex = clean_directory(extracted_files)
+            logger.info(f"Limpeza final: {removed_dl} downloads e {removed_ex} extraidos removidos")
+            console.print("[green]Arquivos temporarios removidos com sucesso.[/green]")
 
     except Exception as e:
         logger.error(f"Erro no processo ETL: {e}", exc_info=True)
