@@ -235,7 +235,52 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
--- 8. TRIGGERS PARA AUDITORIA (OPCIONAL)
+-- 8. LOG DE EXECUCOES DO ETL
+-- ============================================================================
+
+-- Tabela para rastrear cada execucao do ETL
+CREATE TABLE IF NOT EXISTS etl_execucao (
+    id SERIAL PRIMARY KEY,
+    data_inicio TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    data_fim TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'em_andamento',
+    ano_mes_dados VARCHAR(7),
+    total_arquivos INTEGER DEFAULT 0,
+    arquivos_baixados INTEGER DEFAULT 0,
+    arquivos_atualizados INTEGER DEFAULT 0,
+    arquivos_falha INTEGER DEFAULT 0,
+    tabelas_carregadas INTEGER DEFAULT 0,
+    tempo_download_seg NUMERIC(10,1),
+    tempo_extracao_seg NUMERIC(10,1),
+    tempo_carga_seg NUMERIC(10,1),
+    tempo_total_seg NUMERIC(10,1),
+    erro_mensagem TEXT,
+    CONSTRAINT chk_status CHECK (status IN ('em_andamento', 'sucesso', 'falha'))
+);
+
+-- View para consultar historico de execucoes
+CREATE OR REPLACE VIEW v_etl_historico AS
+SELECT
+    id,
+    data_inicio,
+    data_fim,
+    status,
+    ano_mes_dados,
+    total_arquivos,
+    arquivos_baixados,
+    arquivos_atualizados,
+    arquivos_falha,
+    tabelas_carregadas,
+    tempo_download_seg || 's' as tempo_download,
+    tempo_extracao_seg || 's' as tempo_extracao,
+    tempo_carga_seg || 's' as tempo_carga,
+    tempo_total_seg || 's' as tempo_total,
+    erro_mensagem
+FROM etl_execucao
+ORDER BY data_inicio DESC;
+
+-- ============================================================================
+-- 9. TRIGGERS PARA AUDITORIA (OPCIONAL)
 -- ============================================================================
 
 -- Tabela de auditoria para mudanças
@@ -271,7 +316,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
--- 9. ESTATÍSTICAS E ANÁLISES
+-- 10. ESTATÍSTICAS E ANÁLISES
 -- ============================================================================
 
 -- Atualizar estatísticas das tabelas
@@ -287,7 +332,7 @@ ANALYZE motivo;
 ANALYZE pais;
 
 -- ============================================================================
--- 10. GRANTS E PERMISSÕES
+-- 11. GRANTS E PERMISSÕES
 -- ============================================================================
 
 -- Criar usuário somente leitura

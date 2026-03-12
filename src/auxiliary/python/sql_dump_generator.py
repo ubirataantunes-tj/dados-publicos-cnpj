@@ -17,7 +17,7 @@ console = Console()
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
-    'database': os.getenv('DB_NAME', 'receita_federal'),
+    'database': os.getenv('DB_NAME', 'receita_cnpj'),
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', ''),
 }
@@ -27,7 +27,7 @@ async def generate_sql_structure():
     conn = await asyncpg.connect(**DB_CONFIG)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_file = f"receita_federal_model_sql_{timestamp}.sql"
+    model_file = f"receita_cnpj_model_sql_{timestamp}.sql"
     
     try:
         console.print("[bold blue]📐 Gerando modelo SQL da estrutura...[/bold blue]")
@@ -106,7 +106,7 @@ async def generate_sample_data():
     conn = await asyncpg.connect(**DB_CONFIG)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sample_file = f"receita_federal_sample_{timestamp}.sql"
+    sample_file = f"receita_cnpj_sample_{timestamp}.sql"
     
     try:
         console.print("[bold blue]📊 Gerando amostra de dados...[/bold blue]")
@@ -220,16 +220,16 @@ async def main():
 # Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 echo "Criando banco de dados..."
-createdb -h localhost -p 5432 -U postgres receita_federal_restored
+createdb -h localhost -p 5432 -U postgres receita_cnpj_restored
 
 echo "Aplicando estrutura..."
-psql -h localhost -p 5432 -U postgres -d receita_federal_restored -f {model_file}
+psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f {model_file}
 
 echo "Inserindo dados de amostra..."
-psql -h localhost -p 5432 -U postgres -d receita_federal_restored -f {sample_file}
+psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f {sample_file}
 
 echo "Aplicando configurações..."
-psql -h localhost -p 5432 -U postgres -d receita_federal_restored -f src/database_setup.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj_restored -f src/database_setup.sql
 
 echo "Banco instalado com sucesso!"
 """

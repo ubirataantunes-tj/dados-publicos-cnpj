@@ -25,7 +25,7 @@ console = Console()
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
-    'database': os.getenv('DB_NAME', 'receita_federal'),
+    'database': os.getenv('DB_NAME', 'receita_cnpj'),
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', ''),
     'command_timeout': 3600,  # 1 hora de timeout

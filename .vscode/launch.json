@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Debug ETL",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/etl/ETL_dados_publicos_empresas.py",
+            "args": [
+                "--debug"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}

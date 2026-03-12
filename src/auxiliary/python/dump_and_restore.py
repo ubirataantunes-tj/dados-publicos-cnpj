@@ -33,7 +33,7 @@ console = Console()
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
-    'database': os.getenv('DB_NAME', 'receita_federal'),
+    'database': os.getenv('DB_NAME', 'receita_cnpj'),
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', ''),
 }
@@ -135,7 +135,7 @@ async def generate_model_script():
     console.print("[bold blue]📐 Gerando modelo da estrutura do banco...[/bold blue]")
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_file = f"receita_federal_model_{timestamp}.sql"
+    model_file = f"receita_cnpj_model_{timestamp}.sql"
     
     # Gerar dump apenas da estrutura
     cmd = get_pg_dump_command(model_file, schema_only=True)
@@ -150,7 +150,7 @@ async def generate_model_script():
             console.print(f"[green]✅ Modelo gerado: {model_file}[/green]")
             
             # Gerar arquivo de documentação
-            doc_file = f"receita_federal_model_doc_{timestamp}.md"
+            doc_file = f"receita_cnpj_model_doc_{timestamp}.md"
             await generate_documentation(doc_file)
             
             return model_file
@@ -167,7 +167,7 @@ async def generate_full_dump():
     console.print("[bold blue]💾 Gerando dump completo do banco...[/bold blue]")
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dump_file = f"receita_federal_full_{timestamp}.dump"
+    dump_file = f"receita_cnpj_full_{timestamp}.dump"
     
     # Gerar dump completo
     cmd = get_pg_dump_command(dump_file)
@@ -201,7 +201,7 @@ async def generate_sql_dump():
     console.print("[bold blue]🔧 Gerando dump SQL puro...[/bold blue]")
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sql_file = f"receita_federal_sql_{timestamp}.sql"
+    sql_file = f"receita_cnpj_sql_{timestamp}.sql"
     
     try:
         conn = await asyncpg.connect(**DB_CONFIG)
@@ -210,7 +210,7 @@ async def generate_sql_dump():
             # Cabeçalho do arquivo
             f.write("-- Dump SQL da Receita Federal\n")
             f.write(f"-- Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("-- Banco: receita_federal\n\n")
+            f.write("-- Banco: receita_cnpj\n\n")
             
             f.write("-- Configurações iniciais\n")
             f.write("SET statement_timeout = 0;\n")
@@ -398,12 +398,12 @@ async def generate_documentation(doc_file):
 
 ### Restaurar apenas estrutura:
 ```bash
-pg_restore --host=localhost --port=5432 --username=postgres --dbname=target_db --schema-only receita_federal_model_YYYYMMDD_HHMMSS.sql
+pg_restore --host=localhost --port=5432 --username=postgres --dbname=target_db --schema-only receita_cnpj_model_YYYYMMDD_HHMMSS.sql
 ```
 
 ### Restaurar dados completos:
 ```bash
-pg_restore --host=localhost --port=5432 --username=postgres --dbname=target_db --clean --create receita_federal_full_YYYYMMDD_HHMMSS.dump
+pg_restore --host=localhost --port=5432 --username=postgres --dbname=target_db --clean --create receita_cnpj_full_YYYYMMDD_HHMMSS.dump
 ```
 
 ## Configuração Recomendada
@@ -554,7 +554,7 @@ def get_target_config():
     target_config = {}
     target_config['host'] = input("Host [localhost]: ") or 'localhost'
     target_config['port'] = int(input("Port [5432]: ") or '5432')
-    target_config['database'] = input("Database [receita_federal_restored]: ") or 'receita_federal_restored'
+    target_config['database'] = input("Database [receita_cnpj_restored]: ") or 'receita_cnpj_restored'
     target_config['user'] = input("User [postgres]: ") or 'postgres'
     target_config['password'] = input("Password: ")
     

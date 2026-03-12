@@ -53,8 +53,8 @@ Este repositório contém um processo de ETL completo para:
 ### 2. **Instalação**
 ```bash
 # Clonar repositório
-git clone https://github.com/seu-usuario/Receita_Federal_do_Brasil_-_Dados_Publicos_CNPJ.git
-cd Receita_Federal_do_Brasil_-_Dados_Publicos_CNPJ
+git clone https://github.com/seu-usuario/receita_cnpj_do_Brasil_-_Dados_Publicos_CNPJ.git
+cd receita_cnpj_do_Brasil_-_Dados_Publicos_CNPJ
 
 # Instalar dependências
 uv install
@@ -68,10 +68,10 @@ cp env.example .env
 ### 3. **Configuração do Banco**
 ```bash
 # Criar banco de dados
-createdb -U postgres receita_federal
+createdb -U postgres receita_cnpj
 
 # Criar estrutura
-psql -U postgres -d receita_federal -f src/sql/banco_de_dados.sql
+psql -U postgres -d receita_cnpj -f src/sql/banco_de_dados.sql
 ```
 
 ### 4. **Execução**
@@ -86,7 +86,7 @@ uv run src/validation/check_database_status.py
 uv run src/indexes/create_indexes.py
 
 # Aplicar configurações avançadas
-psql -U postgres -d receita_federal -f src/sql/database_setup.sql
+psql -U postgres -d receita_cnpj -f src/sql/database_setup.sql
 ```
 
 ## 📊 Dados Processados
@@ -188,7 +188,7 @@ SET checkpoint_completion_target = 0.9;
 # Configurações do banco
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=receita_federal
+DB_NAME=receita_cnpj
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 
@@ -207,6 +207,38 @@ MAX_RETRIES=3
 - **Espaço em disco**: 50GB livres
 - **CPU**: Multi-core recomendado
 - **Rede**: Conexão estável para downloads
+
+## 📊 Log de Execuções do ETL
+
+O sistema registra automaticamente cada execução do ETL na tabela `etl_execucao` do banco de dados, incluindo:
+
+- **Data de início e fim** da execução
+- **Status**: `em_andamento`, `sucesso` ou `falha`
+- **Ano/mês dos dados** processados (ex: `2026-02`)
+- **Contadores de arquivos**: total, baixados, já atualizados, falhas
+- **Tabelas carregadas** no banco
+- **Tempos por fase**: download, extração, carga e total
+- **Mensagem de erro** (em caso de falha)
+
+### Consultar Histórico de Execuções:
+```sql
+-- View com histórico completo
+SELECT * FROM v_etl_historico;
+
+-- Últimas 5 execuções
+SELECT id, data_inicio, status, ano_mes_dados, arquivos_baixados, arquivos_falha, tempo_total_seg
+FROM etl_execucao
+ORDER BY data_inicio DESC
+LIMIT 5;
+
+-- Apenas execuções com falha
+SELECT id, data_inicio, ano_mes_dados, erro_mensagem
+FROM etl_execucao
+WHERE status = 'falha'
+ORDER BY data_inicio DESC;
+```
+
+A tabela é criada automaticamente na primeira execução do ETL (`CREATE TABLE IF NOT EXISTS`).
 
 ## 📋 Comandos Úteis
 
@@ -237,7 +269,7 @@ uv run src/etl/resume_etl.py
 uv run src/indexes/create_indexes.py
 
 # Verificar integridade
-psql -d receita_federal -c "SELECT COUNT(*) FROM empresa;"
+psql -d receita_cnpj -c "SELECT COUNT(*) FROM empresa;"
 ```
 
 ## 🔧 Troubleshooting
@@ -260,7 +292,7 @@ psql -d receita_federal -c "SELECT COUNT(*) FROM empresa;"
 3. **Erro de conexão**:
    ```bash
    # Verificar .env e PostgreSQL
-   psql -h localhost -p 5432 -U postgres -d receita_federal
+   psql -h localhost -p 5432 -U postgres -d receita_cnpj
    ```
 
 4. **Espaço em disco**:

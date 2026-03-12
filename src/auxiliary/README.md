@@ -180,7 +180,7 @@ python src/auxiliary/python/consultar_empresa.py 11222333000181
 # .env na raiz do projeto
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=receita_federal
+DB_NAME=receita_cnpj
 DB_USER=postgres
 DB_PASSWORD=senha
 ```

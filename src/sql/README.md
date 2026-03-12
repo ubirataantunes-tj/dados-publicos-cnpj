@@ -16,7 +16,7 @@ Scripts SQL essenciais para estrutura do banco, configurações e consultas prin
 **Uso:**
 ```bash
 # Criar estrutura do banco
-psql -h localhost -p 5432 -U postgres -d receita_federal -f src/sql/banco_de_dados.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj -f src/sql/banco_de_dados.sql
 ```
 
 ### 🔧 `database_setup.sql`
@@ -32,7 +32,7 @@ psql -h localhost -p 5432 -U postgres -d receita_federal -f src/sql/banco_de_dad
 **Uso:**
 ```bash
 # Aplicar configurações
-psql -h localhost -p 5432 -U postgres -d receita_federal -f src/sql/database_setup.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj -f src/sql/database_setup.sql
 ```
 
 ### 🔍 `consulta_empresa_completa.sql`
@@ -48,7 +48,7 @@ psql -h localhost -p 5432 -U postgres -d receita_federal -f src/sql/database_set
 **Uso:**
 ```bash
 # Executar consultas
-psql -h localhost -p 5432 -U postgres -d receita_federal -f src/sql/consulta_empresa_completa.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj -f src/sql/consulta_empresa_completa.sql
 ```
 
 ## 🏗️ Estrutura do Banco
@@ -365,13 +365,13 @@ $$ LANGUAGE plpgsql;
 ```sql
 -- Usuário somente leitura
 CREATE USER receita_readonly WITH PASSWORD 'senha_segura';
-GRANT CONNECT ON DATABASE receita_federal TO receita_readonly;
+GRANT CONNECT ON DATABASE receita_cnpj TO receita_readonly;
 GRANT USAGE ON SCHEMA public TO receita_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO receita_readonly;
 
 -- Usuário para aplicação
 CREATE USER receita_app WITH PASSWORD 'senha_aplicacao';
-GRANT CONNECT ON DATABASE receita_federal TO receita_app;
+GRANT CONNECT ON DATABASE receita_cnpj TO receita_app;
 GRANT USAGE ON SCHEMA public TO receita_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO receita_app;
 ```
@@ -393,5 +393,5 @@ ANALYZE simples;
 VACUUM ANALYZE;
 
 -- Reconstruir índices se necessário
-REINDEX DATABASE receita_federal;
+REINDEX DATABASE receita_cnpj;
 ```

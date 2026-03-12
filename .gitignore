@@ -135,7 +135,7 @@ data/
 dados/
 code/
 .claude/
-receita_federal_sql_20250716_161005.sql
+receita_cnpj_sql_20250716_161005.sql
 
 # ETL temporary files
 *.log
@@ -152,3 +152,4 @@ extracted/
 
 # Database dumps
 *.sql
+*.dump

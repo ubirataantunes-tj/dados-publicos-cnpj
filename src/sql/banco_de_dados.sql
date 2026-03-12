@@ -120,6 +120,26 @@ CREATE TABLE qualificacao (
     descricao TEXT
 );
 
+-- Tabela de log de execucoes do ETL
+CREATE TABLE IF NOT EXISTS etl_execucao (
+    id SERIAL PRIMARY KEY,
+    data_inicio TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    data_fim TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'em_andamento',
+    ano_mes_dados VARCHAR(7),
+    total_arquivos INTEGER DEFAULT 0,
+    arquivos_baixados INTEGER DEFAULT 0,
+    arquivos_atualizados INTEGER DEFAULT 0,
+    arquivos_falha INTEGER DEFAULT 0,
+    tabelas_carregadas INTEGER DEFAULT 0,
+    tempo_download_seg NUMERIC(10,1),
+    tempo_extracao_seg NUMERIC(10,1),
+    tempo_carga_seg NUMERIC(10,1),
+    tempo_total_seg NUMERIC(10,1),
+    erro_mensagem TEXT,
+    CONSTRAINT chk_status CHECK (status IN ('em_andamento', 'sucesso', 'falha'))
+);
+
 -- Índices para melhor performance
 CREATE INDEX IF NOT EXISTS empresa_cnpj ON empresa(cnpj_basico);
 CREATE INDEX IF NOT EXISTS estabelecimento_cnpj ON estabelecimento(cnpj_basico);

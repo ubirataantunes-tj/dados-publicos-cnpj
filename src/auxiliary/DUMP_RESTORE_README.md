@@ -20,14 +20,14 @@ pip install asyncpg python-dotenv rich
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=receita_federal
+DB_NAME=receita_cnpj
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 ```
 
 2. **Verificar conexão com o banco**:
 ```bash
-psql -h localhost -p 5432 -U postgres -d receita_federal
+psql -h localhost -p 5432 -U postgres -d receita_cnpj
 ```
 
 ## 🚀 Comandos Disponíveis
@@ -43,15 +43,15 @@ Exibe estatísticas completas do banco (tamanho, registros por tabela, etc.)
 python src/dump_and_restore.py model
 ```
 Cria:
-- `receita_federal_model_YYYYMMDD_HHMMSS.sql` - Estrutura do banco
-- `receita_federal_model_doc_YYYYMMDD_HHMMSS.md` - Documentação
+- `receita_cnpj_model_YYYYMMDD_HHMMSS.sql` - Estrutura do banco
+- `receita_cnpj_model_doc_YYYYMMDD_HHMMSS.md` - Documentação
 
 ### 3. Dump Completo (Estrutura + Dados)
 ```bash
 python src/dump_and_restore.py dump
 ```
 Cria:
-- `receita_federal_full_YYYYMMDD_HHMMSS.dump` - Backup completo
+- `receita_cnpj_full_YYYYMMDD_HHMMSS.dump` - Backup completo
 
 ### 4. Restaurar Banco
 ```bash
@@ -73,16 +73,16 @@ Gera modelo + dump completo + documentação
 ```bash
 # Gerar dump completo
 python src/dump_and_restore.py dump
-# Resultado: receita_federal_full_20250716_143022.dump
+# Resultado: receita_cnpj_full_20250716_143022.dump
 ```
 
 2. **No servidor destino:**
 ```bash
 # Copiar arquivo dump para o servidor destino
-scp receita_federal_full_20250716_143022.dump usuario@servidor-destino:/tmp/
+scp receita_cnpj_full_20250716_143022.dump usuario@servidor-destino:/tmp/
 
 # Restaurar
-python src/dump_and_restore.py restore /tmp/receita_federal_full_20250716_143022.dump
+python src/dump_and_restore.py restore /tmp/receita_cnpj_full_20250716_143022.dump
 ```
 
 ### Cenário: Criar ambiente de desenvolvimento
@@ -94,7 +94,7 @@ python src/dump_and_restore.py model
 
 2. **Aplicar configurações otimizadas:**
 ```bash
-psql -h localhost -p 5432 -U postgres -d receita_federal_dev -f src/database_setup.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj_dev -f src/database_setup.sql
 ```
 
 ## 🔧 Configuração Avançada
@@ -125,7 +125,7 @@ max_connections = 200
 ### Aplicar Configurações
 ```bash
 # Aplicar configurações de performance e índices
-psql -h localhost -p 5432 -U postgres -d receita_federal -f src/database_setup.sql
+psql -h localhost -p 5432 -U postgres -d receita_cnpj -f src/database_setup.sql
 ```
 
 ## 📈 Monitoramento
@@ -133,7 +133,7 @@ psql -h localhost -p 5432 -U postgres -d receita_federal -f src/database_setup.s
 ### Verificar Progresso do Dump
 ```bash
 # Em outro terminal, monitorar tamanho do arquivo
-watch -n 5 'ls -lh receita_federal_full_*.dump'
+watch -n 5 'ls -lh receita_cnpj_full_*.dump'
 ```
 
 ### Verificar Progresso da Restauração
@@ -191,23 +191,23 @@ ORDER BY n_live_tup DESC;
 ### Backup Seguro
 ```bash
 # Criptografar dump
-gpg --cipher-algo AES256 --compress-algo 1 --symmetric receita_federal_full_20250716_143022.dump
+gpg --cipher-algo AES256 --compress-algo 1 --symmetric receita_cnpj_full_20250716_143022.dump
 
 # Descriptografar
-gpg --decrypt receita_federal_full_20250716_143022.dump.gpg > receita_federal_full_20250716_143022.dump
+gpg --decrypt receita_cnpj_full_20250716_143022.dump.gpg > receita_cnpj_full_20250716_143022.dump
 ```
 
 ### Usuários Recomendados
 ```sql
 -- Usuário somente leitura
 CREATE USER receita_readonly WITH PASSWORD 'senha_segura';
-GRANT CONNECT ON DATABASE receita_federal TO receita_readonly;
+GRANT CONNECT ON DATABASE receita_cnpj TO receita_readonly;
 GRANT USAGE ON SCHEMA public TO receita_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO receita_readonly;
 
 -- Usuário para aplicação
 CREATE USER receita_app WITH PASSWORD 'senha_aplicacao';
-GRANT CONNECT ON DATABASE receita_federal TO receita_app;
+GRANT CONNECT ON DATABASE receita_cnpj TO receita_app;
 GRANT USAGE ON SCHEMA public TO receita_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO receita_app;
 ```
@@ -255,9 +255,9 @@ src/
 └── resume_etl.py           # Retomar ETL
 
 backups/
-├── receita_federal_model_YYYYMMDD_HHMMSS.sql
-├── receita_federal_full_YYYYMMDD_HHMMSS.dump
-└── receita_federal_model_doc_YYYYMMDD_HHMMSS.md
+├── receita_cnpj_model_YYYYMMDD_HHMMSS.sql
+├── receita_cnpj_full_YYYYMMDD_HHMMSS.dump
+└── receita_cnpj_model_doc_YYYYMMDD_HHMMSS.md
 ```
 
 ## 🔗 Recursos Adicionais

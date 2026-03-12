@@ -79,7 +79,7 @@ uv run src/etl/ETL_dados_publicos_empresas.py
 # BANCO DE DADOS
 DB_HOST=localhost
 DB_PORT=5436
-DB_NAME=receita_federal
+DB_NAME=receita_cnpj
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 

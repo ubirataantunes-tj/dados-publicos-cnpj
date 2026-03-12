@@ -11,6 +11,7 @@ import datetime
 import gc
 import logging
 import pathlib
+import socket
 from dotenv import load_dotenv
 import bs4 as bs
 import os
@@ -151,6 +152,7 @@ load_dotenv(dotenv_path=dotenv_path)
 
 parser = argparse.ArgumentParser(description='ETL Dados Publicos CNPJ - Receita Federal')
 parser.add_argument('--debug', action='store_true', help='Modo interativo com inputs manuais')
+parser.add_argument('--force', action='store_true', help='Forcar execucao mesmo se o mes ja foi processado com sucesso')
 cli_args = parser.parse_args()
 
 DEBUG_MODE = cli_args.debug
@@ -507,7 +509,9 @@ async def download_file_with_resume(url, file_name, client):
 
 
 async def download_all_files():
-    """Download sequencial dos arquivos com resume."""
+    """Download sequencial dos arquivos com resume.
+    Retorna dict com metricas: total, baixados, atualizados (ja existiam), falhas.
+    """
     import ssl
 
     print(f'Iniciando download de {len(Files)} arquivos...')
@@ -517,7 +521,8 @@ async def download_all_files():
     ssl_context.verify_mode = ssl.CERT_NONE
     timeout = httpx.Timeout(120.0, read=60.0, connect=60.0)
 
-    successful = 0
+    downloaded = 0
+    up_to_date = 0
     failed = []
 
     async with httpx.AsyncClient(
@@ -540,18 +545,26 @@ async def download_all_files():
             needs_download = await check_diff(url, file_path_local, client)
             if not needs_download:
                 print(f'{basename} ja existe e esta atualizado.')
-                successful += 1
+                up_to_date += 1
                 continue
 
             ok = await download_file_with_resume(url, basename, client)
             if ok:
-                successful += 1
+                downloaded += 1
             else:
                 failed.append(basename)
 
+    successful = downloaded + up_to_date
     print(f'\nDownloads concluidos: {successful}/{len(Files)} arquivos')
     if failed:
         print(f'Falhas: {", ".join(failed)}')
+
+    return {
+        'total': len(Files),
+        'baixados': downloaded,
+        'atualizados': up_to_date,
+        'falhas': len(failed),
+    }
 
 
 # ============================================================
@@ -676,13 +689,22 @@ async def to_sql_async(dataframe, pool, table_name, schema='staging'):
     logger.info(f'{schema}.{table_name}: inserindo {total:,} registros via COPY...')
 
     async with pool.acquire() as conn:
-        await conn.copy_records_to_table(
-            table_name,
-            records=records,
-            columns=columns,
-            schema_name=schema,
-            timeout=600
-        )
+        try:
+            await asyncio.wait_for(
+                conn.copy_records_to_table(
+                    table_name,
+                    records=records,
+                    columns=columns,
+                    schema_name=schema,
+                    timeout=COPY_TIMEOUT,
+                ),
+                timeout=COPY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            msg = (f'Timeout ao inserir {total:,} registros em {schema}.{table_name} '
+                   f'(limite: {COPY_TIMEOUT}s)')
+            logger.error(msg)
+            raise TimeoutError(msg)
 
     logger.info(f'{schema}.{table_name}: {total:,} registros inseridos.')
 
@@ -834,7 +856,11 @@ async def create_database_if_not_exists():
     if ssl_mode.lower() in ['disable', 'false']:
         ssl_config = False
     elif ssl_mode.lower() in ['require', 'true']:
-        ssl_config = True
+        import ssl
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_config = ssl_context
     else:
         ssl_config = 'prefer'
 
@@ -884,9 +910,27 @@ async def create_db_pool():
     if ssl_mode.lower() in ['disable', 'false']:
         ssl_config = False
     elif ssl_mode.lower() in ['require', 'true']:
-        ssl_config = True
+        import ssl
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_config = ssl_context
     else:
         ssl_config = 'prefer'
+
+    async def pool_init(conn):
+        """Configura TCP keepalive em cada conexao para detectar banco morto."""
+        # Envia keepalive a cada 30s; se 3 probes falharem, conexao morre em ~90s
+        raw_socket = conn._transport.get_extra_info('socket')
+        if raw_socket is not None:
+            raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Linux-specific keepalive tuning
+            if hasattr(socket, 'TCP_KEEPIDLE'):
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            if hasattr(socket, 'TCP_KEEPINTVL'):
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            if hasattr(socket, 'TCP_KEEPCNT'):
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
 
     return await asyncpg.create_pool(
         user=user, password=passw, database=database,
@@ -896,7 +940,8 @@ async def create_db_pool():
         server_settings={
             'client_encoding': 'utf8',
             'timezone': 'UTC'
-        }
+        },
+        init=pool_init,
     )
 
 
@@ -957,21 +1002,61 @@ async def swap_to_production(pool):
     console.print("[green]Swap para producao concluido![/green]")
 
 
+async def db_watchdog(pool, main_task, interval=60):
+    """Monitora conectividade com o banco periodicamente.
+    Se o banco ficar inacessivel, cancela a task principal para forcar o retry.
+    Com interval=60 e max_failures=5, detecta banco morto em ~5 minutos.
+    Usa conexao separada do pool, nao interfere nas operacoes pesadas."""
+    consecutive_failures = 0
+    max_failures = 5
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                await conn.fetchval('SELECT 1')
+            consecutive_failures = 0
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            consecutive_failures += 1
+            logger.warning(
+                f"Watchdog: banco inacessivel ({consecutive_failures}/{max_failures}): {e}"
+            )
+            if consecutive_failures >= max_failures:
+                msg = f"Banco de dados inacessivel apos {max_failures} verificacoes consecutivas: {e}"
+                logger.error(f"Watchdog: {msg}. Cancelando operacao principal.")
+                main_task.cancel(msg)
+                return
+
+
+INDEX_TIMEOUT = int(os.getenv('ETL_INDEX_TIMEOUT', '1800'))  # 30 min por indice
+COPY_TIMEOUT = int(os.getenv('ETL_COPY_TIMEOUT', '900'))    # 15 min por COPY
+
+
 async def create_indexes(pool):
     """Cria indices nas tabelas de producao"""
     console.print("\n[bold yellow]Criando indices...[/bold yellow]")
 
-    async with pool.acquire() as conn:
-        await conn.execute("SET statement_timeout = '3600000'")
-
-        for i, index_sql in enumerate(INDEXES):
+    for i, index_sql in enumerate(INDEXES):
+        start = time.time()
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET statement_timeout = '{INDEX_TIMEOUT * 1000}'")
             try:
-                start = time.time()
-                await conn.execute(index_sql)
+                await asyncio.wait_for(
+                    conn.execute(index_sql),
+                    timeout=INDEX_TIMEOUT,
+                )
                 elapsed = time.time() - start
                 logger.info(f'Indice [{i+1}/{len(INDEXES)}] criado em {elapsed:.1f}s')
+            except asyncio.TimeoutError:
+                elapsed = time.time() - start
+                msg = (f'Timeout ao criar indice [{i+1}/{len(INDEXES)}] '
+                       f'apos {elapsed:.0f}s (limite: {INDEX_TIMEOUT}s)')
+                logger.error(msg)
+                raise TimeoutError(msg)
             except Exception as e:
-                logger.error(f'Erro ao criar indice: {e}')
+                logger.error(f'Erro ao criar indice [{i+1}/{len(INDEXES)}]: {e}')
+                raise
 
     console.print(f"[green]{len(INDEXES)} indices criados![/green]")
 
@@ -1031,7 +1116,7 @@ async def process_estabelecimento_files(pool):
                      'ddd_fax', 'fax', 'correio_eletronico', 'situacao_especial',
                      'data_situacao_especial']
 
-    CHUNK_SIZE = 2_000_000
+    CHUNK_SIZE = 500_000
 
     for e in range(len(arquivos_estabelecimento)):
         logger.info(f'Estabelecimento [{e+1}/{len(arquivos_estabelecimento)}]: {arquivos_estabelecimento[e]}')
@@ -1168,6 +1253,107 @@ async def process_outros_arquivos(pool):
 
 
 # ============================================================
+# LOG DE EXECUCAO NO BANCO
+# ============================================================
+
+ETL_EXECUCAO_DDL = """
+CREATE TABLE IF NOT EXISTS etl_execucao (
+    id SERIAL PRIMARY KEY,
+    data_inicio TIMESTAMP NOT NULL,
+    data_fim TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'em_andamento',
+    ano_mes_dados VARCHAR(7),
+    total_arquivos INTEGER DEFAULT 0,
+    arquivos_baixados INTEGER DEFAULT 0,
+    arquivos_atualizados INTEGER DEFAULT 0,
+    arquivos_falha INTEGER DEFAULT 0,
+    tabelas_carregadas INTEGER DEFAULT 0,
+    tempo_download_seg NUMERIC(10,1),
+    tempo_extracao_seg NUMERIC(10,1),
+    tempo_carga_seg NUMERIC(10,1),
+    tempo_total_seg NUMERIC(10,1),
+    erro_mensagem TEXT,
+    CONSTRAINT chk_status CHECK (status IN ('em_andamento', 'sucesso', 'falha'))
+)
+"""
+
+
+async def verificar_execucao_anterior(pool, ano_mes):
+    """Verifica se ja existe uma execucao com sucesso para o mes selecionado.
+    Retorna True se pode prosseguir, False se deve abortar."""
+    async with pool.acquire() as conn:
+        await conn.execute(ETL_EXECUCAO_DDL)
+        row = await conn.fetchrow(
+            "SELECT id, data_inicio, data_fim "
+            "FROM etl_execucao "
+            "WHERE ano_mes_dados = $1 AND status = 'sucesso' "
+            "ORDER BY data_fim DESC LIMIT 1",
+            ano_mes,
+        )
+    if not row:
+        return True
+
+    data_fim = row['data_fim'].strftime('%Y-%m-%d %H:%M:%S')
+    console.print(
+        f"\n[bold yellow]O ETL para o mes [cyan]{ano_mes}[/cyan] ja foi concluido "
+        f"com sucesso em [cyan]{data_fim}[/cyan] (execucao id={row['id']}).[/bold yellow]"
+    )
+
+    if cli_args.force:
+        console.print("[yellow]Flag --force ativa, prosseguindo mesmo assim.[/yellow]")
+        return True
+
+    if not DEBUG_MODE:
+        console.print("[yellow]Modo automatico: abortando para evitar reprocessamento. Use --force para forcar.[/yellow]")
+        return False
+
+    resp = input("Deseja executar novamente? (s/N): ").strip().lower()
+    return resp in ('s', 'sim', 'y', 'yes')
+
+
+async def registrar_inicio_execucao(pool, ano_mes):
+    """Registra inicio de uma execucao ETL e retorna o id."""
+    data_inicio = datetime.datetime.now()
+
+    async with pool.acquire() as conn:
+        await conn.execute(ETL_EXECUCAO_DDL)
+        row_id = await conn.fetchval(
+            "INSERT INTO etl_execucao (data_inicio, ano_mes_dados) VALUES ($1, $2) RETURNING id",
+            data_inicio,
+            ano_mes
+        )
+    logger.info(f"Execucao ETL registrada com id={row_id}")
+    return row_id
+
+
+async def atualizar_execucao(pool, exec_id, **kwargs):
+    """Atualiza campos da execucao ETL."""
+    if not kwargs:
+        return
+    set_parts = []
+    values = []
+    for i, (key, val) in enumerate(kwargs.items(), start=1):
+        set_parts.append(f"{key} = ${i}")
+        values.append(val)
+    values.append(exec_id)
+    sql = f"UPDATE etl_execucao SET {', '.join(set_parts)} WHERE id = ${len(values)}"
+    async with pool.acquire() as conn:
+        await conn.execute(sql, *values)
+
+
+async def finalizar_execucao(pool, exec_id, status, erro_mensagem=None, **metricas):
+    """Finaliza a execucao com status, tempo e metricas."""
+    await atualizar_execucao(
+        pool, exec_id,
+        data_fim=datetime.datetime.now(),
+        status=status,
+        erro_mensagem=erro_mensagem,
+        **metricas
+    )
+    logger.info(f"Execucao ETL id={exec_id} finalizada com status={status}")
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -1177,61 +1363,155 @@ async def main():
     console.print("[bold magenta]" + "="*50 + "[/bold magenta]\n")
 
     start_time = time.time()
+    ano_mes_dados = f"{ano}-{mes_formatado}"
+    exec_id = None
+    download_metrics = {}
+    download_time = 0.0
+    extract_time = 0.0
 
-    # Fase 0: Inicializacao
-    initialize()
+    # Verificar se ha checkpoint de execucao anterior
+    checkpoint = load_checkpoint()
+    resuming = checkpoint is not None
+
+    if resuming:
+        stage = checkpoint['stage']
+        console.print(f"[bold yellow]Checkpoint encontrado: stage='{stage}' "
+                       f"(salvo em {checkpoint['timestamp']})[/bold yellow]")
+        console.print("[bold yellow]Retomando execucao de onde parou...[/bold yellow]\n")
+    else:
+        stage = None
+
+    # Definir quais fases ja foram concluidas
+    STAGE_ORDER = [
+        'staging_created', 'empresa_done', 'estabelecimento_done',
+        'socios_done', 'simples_done', 'all_data_loaded', 'swap_done'
+    ]
+
+    def stage_completed(required_stage):
+        """Retorna True se o checkpoint indica que esta fase ja foi concluida."""
+        if not resuming or stage is None:
+            return False
+        try:
+            return STAGE_ORDER.index(stage) >= STAGE_ORDER.index(required_stage)
+        except ValueError:
+            return False
 
     try:
-        # Fase 1: Download
-        console.print("\n[bold yellow][FASE 1] Download dos arquivos...[/bold yellow]")
-        download_start = time.time()
-        await download_all_files()
-        download_time = time.time() - download_start
-        console.print(f"[green]Download concluido em {download_time:.1f}s[/green]")
+        # Verificar se ja foi executado com sucesso para este mes (antes de qualquer download)
+        await create_database_if_not_exists()
+        check_pool = await create_db_pool()
+        try:
+            if not await verificar_execucao_anterior(check_pool, ano_mes_dados):
+                return
+            
+            # Registrar inicio da execucao no banco
+            exec_id = await registrar_inicio_execucao(check_pool, ano_mes_dados)
+        finally:
+            await check_pool.close()
 
-        # Fase 2: Extracao
-        console.print("\n[bold yellow][FASE 2] Extracao dos arquivos...[/bold yellow]")
-        extract_start = time.time()
-        await extract_all_files()
-        extract_time = time.time() - extract_start
-        console.print(f"[green]Extracao concluida em {extract_time:.1f}s[/green]")
+        # Fase 0 + 1 + 2: Download e extracao (pular se swap ja foi feito)
+        if not stage_completed('swap_done'):
+            # Fase 0: Inicializacao
+            initialize()
 
-        classificar_arquivos_extraidos()
+            # Fase 1: Download
+            console.print("\n[bold yellow][FASE 1] Download dos arquivos...[/bold yellow]")
+            download_start = time.time()
+            download_metrics = await download_all_files()
+            download_time = time.time() - download_start
+            console.print(f"[green]Download concluido em {download_time:.1f}s[/green]")
+
+            # Fase 2: Extracao
+            console.print("\n[bold yellow][FASE 2] Extracao dos arquivos...[/bold yellow]")
+            extract_start = time.time()
+            await extract_all_files()
+            extract_time = time.time() - extract_start
+            console.print(f"[green]Extracao concluida em {extract_time:.1f}s[/green]")
+
+            classificar_arquivos_extraidos()
+        else:
+            console.print("[green]Fases 1-4 ja concluidas (swap feito). Pulando para indices...[/green]")
 
         # Fase 3: Carga no banco (staging)
-        console.print("\n[bold yellow][FASE 3] Carga no banco (staging)...[/bold yellow]")
         db_start = time.time()
 
-        await create_database_if_not_exists()
         pool = await create_db_pool()
 
+        # Iniciar watchdog para detectar banco inacessivel
+        # Verifica a cada 60s; declara falha apos 5 checks consecutivos sem resposta (~5 min)
+        current_task = asyncio.current_task()
+        watchdog_task = asyncio.create_task(db_watchdog(pool, current_task, interval=60))
+
         try:
-            # Criar schema staging com tabelas tipadas
-            await setup_staging_schema(pool)
-            save_checkpoint('staging_created')
+            await atualizar_execucao(
+                pool, exec_id,
+                total_arquivos=download_metrics.get('total', 0),
+                arquivos_baixados=download_metrics.get('baixados', 0),
+                arquivos_atualizados=download_metrics.get('atualizados', 0),
+                arquivos_falha=download_metrics.get('falhas', 0),
+                tempo_download_seg=round(download_time, 1),
+                tempo_extracao_seg=round(extract_time, 1),
+            )
 
-            # Processar todas as tabelas -> staging
-            await process_empresa_files(pool)
-            save_checkpoint('empresa_done')
+            if not stage_completed('swap_done'):
+                console.print("\n[bold yellow][FASE 3] Carga no banco (staging)...[/bold yellow]")
 
-            await process_estabelecimento_files(pool)
-            save_checkpoint('estabelecimento_done')
+                # Criar schema staging com tabelas tipadas
+                if not stage_completed('staging_created'):
+                    await setup_staging_schema(pool)
+                    save_checkpoint('staging_created')
 
-            await process_socios_files(pool)
-            save_checkpoint('socios_done')
+                # Processar todas as tabelas -> staging
+                tabelas_ok = 0
 
-            await process_simples_files(pool)
-            save_checkpoint('simples_done')
+                if not stage_completed('empresa_done'):
+                    await process_empresa_files(pool)
+                    save_checkpoint('empresa_done')
+                else:
+                    console.print("[green]Empresa ja processada, pulando...[/green]")
+                tabelas_ok += 1
 
-            await process_outros_arquivos(pool)
-            save_checkpoint('all_data_loaded')
+                if not stage_completed('estabelecimento_done'):
+                    await process_estabelecimento_files(pool)
+                    save_checkpoint('estabelecimento_done')
+                else:
+                    console.print("[green]Estabelecimento ja processado, pulando...[/green]")
+                tabelas_ok += 1
 
-            # Fase 4: Swap para producao (atomico por tabela)
-            console.print("\n[bold yellow][FASE 4] Swap para producao...[/bold yellow]")
-            await swap_to_production(pool)
-            save_checkpoint('swap_done')
+                if not stage_completed('socios_done'):
+                    await process_socios_files(pool)
+                    save_checkpoint('socios_done')
+                else:
+                    console.print("[green]Socios ja processado, pulando...[/green]")
+                tabelas_ok += 1
+
+                if not stage_completed('simples_done'):
+                    await process_simples_files(pool)
+                    save_checkpoint('simples_done')
+                else:
+                    console.print("[green]Simples ja processado, pulando...[/green]")
+                tabelas_ok += 1
+
+                if not stage_completed('all_data_loaded'):
+                    await process_outros_arquivos(pool)
+                    save_checkpoint('all_data_loaded')
+                else:
+                    console.print("[green]Tabelas auxiliares ja processadas, pulando...[/green]")
+                tabelas_ok += 6  # cnae, motivo, municipio, natureza, pais, qualificacao
+
+                # Fase 4: Swap para producao (atomico por tabela)
+                console.print("\n[bold yellow][FASE 4] Swap para producao...[/bold yellow]")
+                await swap_to_production(pool)
+                save_checkpoint('swap_done')
+            else:
+                tabelas_ok = 10
+
+            # Verificar se watchdog detectou problema antes de continuar
+            if watchdog_task.done():
+                watchdog_task.result()  # propaga a excecao se houver
 
             # Fase 5: Criar indices (na producao, apos swap)
+            # Os indices usam IF NOT EXISTS, entao e seguro reexecutar
             console.print("\n[bold yellow][FASE 5] Criacao de indices...[/bold yellow]")
             await create_indexes(pool)
 
@@ -1241,11 +1521,46 @@ async def main():
 
             clear_checkpoint()
 
+            db_time = time.time() - db_start
+            total_time = time.time() - start_time
+
+            # Registrar sucesso no banco
+            await finalizar_execucao(
+                pool, exec_id, 'sucesso',
+                tabelas_carregadas=tabelas_ok,
+                tempo_carga_seg=round(db_time, 1),
+                tempo_total_seg=round(total_time, 1),
+            )
+
+        except asyncio.CancelledError as e:
+            # Watchdog cancelou a task porque o banco ficou inacessivel
+            msg = str(e) if str(e) else "Operacao cancelada (banco inacessivel detectado pelo watchdog)"
+            logger.error(msg)
+            db_time = time.time() - db_start
+            total_time = time.time() - start_time
+            raise ConnectionError(msg) from e
+        except Exception as e:
+            db_time = time.time() - db_start
+            total_time = time.time() - start_time
+            if exec_id:
+                try:
+                    await finalizar_execucao(
+                        pool, exec_id, 'falha',
+                        erro_mensagem=str(e)[:500],
+                        tempo_carga_seg=round(db_time, 1),
+                        tempo_total_seg=round(total_time, 1),
+                    )
+                except Exception:
+                    logger.warning("Nao foi possivel registrar falha no banco (banco inacessivel?)")
+            raise
         finally:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
             await pool.close()
 
-        db_time = time.time() - db_start
-        total_time = time.time() - start_time
         minutes = int(total_time // 60)
         seconds = int(total_time % 60)
 
@@ -1261,6 +1576,17 @@ async def main():
         table.add_row("Banco (carga + swap + indices)", f"{db_time:.1f}s")
         table.add_row("Total", f"{total_time:.1f}s", style="bold")
         console.print(table)
+
+        # Resumo de arquivos
+        if download_metrics:
+            dl_table = Table(title="Resumo de Arquivos")
+            dl_table.add_column("Metrica", style="cyan")
+            dl_table.add_column("Quantidade", style="magenta")
+            dl_table.add_row("Total de arquivos", str(download_metrics.get('total', 0)))
+            dl_table.add_row("Baixados (novos)", str(download_metrics.get('baixados', 0)))
+            dl_table.add_row("Ja atualizados", str(download_metrics.get('atualizados', 0)))
+            dl_table.add_row("Falhas", str(download_metrics.get('falhas', 0)))
+            console.print(dl_table)
 
         console.print("\n[bold blue]Dados disponiveis no banco![/bold blue]")
 

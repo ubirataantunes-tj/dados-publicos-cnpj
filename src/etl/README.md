@@ -28,7 +28,7 @@ Arquivo `.env` na raiz do projeto:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=receita_federal
+DB_NAME=receita_cnpj
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 ```
@@ -121,7 +121,7 @@ uv run src/etl/resume_etl.py
 3. **Erro de conexão:**
    ```bash
    # Verificar .env
-   # Testar conexão: psql -h localhost -p 5432 -U postgres -d receita_federal
+   # Testar conexão: psql -h localhost -p 5432 -U postgres -d receita_cnpj
    ```
 
 4. **Arquivo corrompido:**
